@@ -1,0 +1,17 @@
+﻿model_version: fusion_v1
+feature_version: feature_v1
+rule_version: rule_v9.0
+config_version: cfg_v1
+
+input_dim: 32
+hidden_dim: 64
+num_layers: 2
+lr: 0.001
+batch_size: 8
+epochs: 30
+
+loss_weights:
+  type: 1.0
+  risk: 1.0
+  tti: 1.0
+  calibration: 0.1

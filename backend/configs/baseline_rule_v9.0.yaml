@@ -1,0 +1,36 @@
+baseline_name: rule_v9.0
+model_version: rule_v9.0
+feature_version: feature_v1
+rule_version: rule_v9.0
+config_version: cfg_rule_v9.0_2026-04-08
+
+description: "YOLO + ByteTrack + rule scoring + dominant cluster + 5-stage keyframes"
+entrypoint: "backend.video_keyframe:extract_keyframes"
+
+feature_export:
+  sample_interval_sec: 0.5
+  smooth_k: 5
+  pair_gap_tolerance: 2
+  include_pair_metrics: true
+  include_pair_scores: true
+  include_cluster_meta: true
+
+output_fields:
+  - impact_time
+  - onset_time
+  - post_time
+  - accident_type
+  - type_confidence
+  - risk_alert_time
+  - lead_time_sec
+  - risk_level
+  - dominant_cluster
+  - dominant_pair
+  - keyframes
+
+evaluation_targets:
+  - type_f1_macro
+  - impact_time_mae
+  - onset_time_mae
+  - keyframe_hit_at_5
+  - lead_time_mean

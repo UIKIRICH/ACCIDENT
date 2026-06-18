@@ -1,0 +1,12 @@
+{
+  "task": "rule_based_keyframe_3class",
+  "best_version": "v9.1",
+  "frozen_at": "2026-04-10",
+  "reason": "Best trade-off so far on 3-class test set; v9.2 regressed macro-F1 and accuracy.",
+  "metrics_path": "outputs/eval/main_metrics_rule_v91_3cls.json",
+  "compare_path": "outputs/eval/compare_rule_v90_v91_3cls.json",
+  "notes": [
+    "Keep v9.1 as production fallback.",
+    "v9.3 experiments should be compared against this checkpoint."
+  ]
+}
