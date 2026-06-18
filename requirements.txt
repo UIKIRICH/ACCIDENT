@@ -1,0 +1,28 @@
+# Project dependencies (pinned for reproducibility)
+
+fastapi
+uvicorn
+pydantic
+python-multipart
+python-dotenv
+
+opencv-python
+ultralytics
+numpy
+
+pandas
+scikit-learn
+joblib
+torch
+tqdm
+
+openpyxl
+matplotlib
+plotly
+
+# SQLAlchemy (ORM) + MySQL driver
+sqlalchemy
+pymysql
+
+# Password hashing
+bcrypt
