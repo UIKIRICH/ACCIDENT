@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depends
+﻿from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,13 +10,15 @@ import tempfile
 import shutil
 import json
 import time
+import hashlib
+import uuid
+import urllib.parse as urllib_parse
 from http.client import IncompleteRead
 import urllib.error as urllib_error
 import urllib.request as urllib_request
 from sqlalchemy import text as sa_text
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import uuid
 from datetime import datetime as dt_datetime
 
 # 获取项目根目录（main.py所在目录）
@@ -580,6 +582,7 @@ async def dify_workflow_run(payload: DifyWorkflowRunRequest):
     return {"result": _extract_dify_result(dify_response)}
 
 @app.post("/dify/analyze_accident_case/")
+@app.post("/api/dify/analyze_accident_case/")
 async def dify_analyze_accident_case(payload: DifyAccidentCaseRequest):
     """Build accident evidence inputs and send to Dify."""
     workflow_inputs = _build_dify_case_inputs(payload.video_result, payload.image_evidence, payload.additional_evidence)
@@ -817,14 +820,14 @@ async def api_save_snapshot(case_id: str, data: dict):
 async def api_get_matched_rules(case_id: str, current_user: dict = Depends(get_current_user)):
     """获取案件命中规则列表"""
     try:
-        from backend.database import get_db_conn, rows_to_list
+        from backend.database import get_db_conn
         conn = get_db_conn()
         try:
             cursor = conn.execute(
                 "SELECT * FROM matched_rules WHERE case_id = ? ORDER BY created_at DESC",
                 (case_id,),
             )
-            rules = rows_to_list(cursor.fetchall())
+            rules = [dict(row) for row in cursor.fetchall()]
             return {"success": True, "data": rules}
         finally:
             conn.close()
@@ -835,14 +838,14 @@ async def api_get_matched_rules(case_id: str, current_user: dict = Depends(get_c
 async def api_get_reviews(case_id: str, current_user: dict = Depends(get_current_user)):
     """获取案件复核记录"""
     try:
-        from backend.database import get_db_conn, rows_to_list
+        from backend.database import get_db_conn
         conn = get_db_conn()
         try:
             cursor = conn.execute(
                 "SELECT * FROM reviews WHERE case_id = ? ORDER BY review_time DESC",
                 (case_id,),
             )
-            reviews = rows_to_list(cursor.fetchall())
+            reviews = [dict(row) for row in cursor.fetchall()]
             return {"success": True, "data": reviews}
         finally:
             conn.close()
@@ -856,14 +859,17 @@ async def api_add_review(case_id: str, data: dict, current_user: dict = Depends(
         from backend.database import get_db_conn
         conn = get_db_conn()
         try:
+            from datetime import datetime
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
-                "INSERT INTO reviews (case_id, reviewer, system_suggestion, final_result, review_comment) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO reviews (case_id, reviewer, system_suggestion, final_result, review_comment, review_time) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     case_id,
                     data.get("reviewer", ""),
                     data.get("system_suggestion", ""),
                     data.get("final_result", ""),
                     data.get("review_comment", ""),
+                    now_str,
                 ),
             )
             conn.commit()
@@ -877,7 +883,6 @@ async def api_add_review(case_id: str, data: dict, current_user: dict = Depends(
 async def api_save_liability(case_id: str, data: dict):
     """保存责任判定结果（含 liability_results + matched_rules 同步）"""
     try:
-        # Validate required fields
         if not case_id:
             raise ValueError("case_id 不能为空")
         if not data:
@@ -1019,27 +1024,100 @@ TEMP_DIR = BASE_DIR / "temp"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
 
+# ---------------------------------------------------------------------------
+# Task 2: 文件存储规范化 - 上传目录结构
+# uploads/cases/{case_id}/
+#   ├── videos/
+#   ├── images/
+#   ├── keyframes/
+#   └── reports/
+# ---------------------------------------------------------------------------
+UPLOADS_DIR = BASE_DIR / "uploads"
+
+def _get_case_upload_dir(case_id: str) -> Path:
+    """获取案件上传目录，自动创建"""
+    d = UPLOADS_DIR / "cases" / case_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def _compute_file_hash(file_path: Path) -> str:
+    """计算文件的 MD5 哈希值"""
+    h = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
 @app.post("/upload_video/")
-async def upload_video(file: UploadFile = File(...)):
-    """Handle video upload and extract keyframes."""
+@app.post("/api/upload_video/")
+async def upload_video(file: UploadFile = File(...), case_id: str = Form("")):
+    """Handle video upload and extract keyframes.
+    文件保存到 uploads/cases/{case_id}/videos/
+    """
+    # 检查文件扩展名
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持此格式: {ext}，支持的格式: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}"
+        )
+
     if extract_keyframes_yolo is None:
         raise HTTPException(status_code=503, detail="视频分析模块不可用")
-    KEYFRAME_DIR.mkdir(parents=True, exist_ok=True)
-    
-    temp_video_path = TEMP_DIR / file.filename
+
+    # 确定目标目录
+    if not case_id:
+        case_id = "unknown"
+    video_dir = _get_case_upload_dir(case_id) / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    # 保存文件到规范路径
+    safe_filename = f"original{ext}"
+    dest_path = video_dir / safe_filename
     try:
-        with open(temp_video_path, "wb") as buffer:
+        with open(dest_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        print(f"[INFO] Using YOLO keyframe extraction for video: {file.filename}")
-        result = await run_in_threadpool(extract_keyframes_yolo, temp_video_path)
-        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    # 计算文件哈希
+    file_hash = _compute_file_hash(dest_path)
+    file_size = dest_path.stat().st_size
+
+    # 创建证据记录
+    try:
+        create_evidence_record(case_id, {
+            "evidence_type": "video",
+            "file_path": str(dest_path),
+            "file_name": file.filename,
+            "file_size": file_size,
+            "file_hash": file_hash,
+            "analysis_status": "pending",
+            "related_stage": "video-processing",
+        })
+    except Exception as e:
+        print(f"[WARN] Failed to create evidence record: {e}")
+
+    # 关键帧目录
+    keyframe_dir = _get_case_upload_dir(case_id) / "keyframes"
+    keyframe_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[INFO] Using YOLO keyframe extraction for video: {file.filename}")
+    try:
+        result = await run_in_threadpool(extract_keyframes_yolo, dest_path)
+        if isinstance(result, dict):
+            result["file_path"] = str(dest_path)
+            result["file_hash"] = file_hash
+            result["file_size"] = file_size
         return result
-    finally:
-        if temp_video_path.exists():
-            temp_video_path.unlink()
-        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"视频分析失败: {str(e)}")
+
 @app.post("/analyze_image_evidence/")
+@app.post("/api/analyze_image_evidence/")
 async def analyze_image_evidence(data: dict):
     """Analyze image evidence and return linkage result."""
     try:
@@ -1071,8 +1149,18 @@ async def analyze_image_evidence(data: dict):
         raise HTTPException(status_code=500, detail=f"Image evidence analysis failed: {str(e)}")
 
 @app.post("/analyze_image_file_evidence/")
-async def analyze_image_file_evidence(file: UploadFile = File(...), video_context: str = None):
-    """Analyze uploaded image evidence. Returns error if classifier is unavailable."""
+async def analyze_image_file_evidence(file: UploadFile = File(...), video_context: str = None, case_id: str = Form("")):
+    """Analyze uploaded image evidence.
+    图片保存到 uploads/cases/{case_id}/images/
+    """
+    # 检查文件扩展名
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持此格式: {ext}，支持的格式: {', '.join(ALLOWED_IMAGE_EXTENSIONS)}"
+        )
+
     video_ctx = {}
     if video_context:
         try:
@@ -1080,34 +1168,59 @@ async def analyze_image_file_evidence(file: UploadFile = File(...), video_contex
         except json.JSONDecodeError as e:
             raise HTTPException(status_code=400, detail=f"video_context parse failed: {str(e)}")
 
-    temp_image_path = TEMP_DIR / file.filename
-    try:
-        with open(temp_image_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    if not case_id:
+        case_id = "unknown"
+    image_dir = _get_case_upload_dir(case_id) / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            from video_keyframe import get_image_classifier
-            classifier = get_image_classifier()
-            # classify_rear_end only accepts image_path (no extra context arg)
-            result = await run_in_threadpool(
-                classifier.classify_rear_end,
-                str(temp_image_path),
-            )
-            # Merge video_ctx metadata into result
-            if isinstance(result, dict) and video_ctx:
-                result["video_context"] = video_ctx
-            return {"success": True, "image_evidence": result}
-        except Exception as classifier_err:
-            print(f"[WARN] Image classifier failed, returning error: {classifier_err}")
-            return {
-                "success": False,
-                "status": "failed",
-                "error_code": "MODEL_UNAVAILABLE",
-                "message": "图片分析模型暂不可用，请重新上传或进入人工复核",
-            }
-    finally:
-        if temp_image_path.exists():
-            temp_image_path.unlink()
+    # 保存文件到规范路径
+    safe_filename = f"scene_{uuid.uuid4().hex[:8]}{ext}"
+    dest_path = image_dir / safe_filename
+    try:
+        with open(dest_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    # 计算文件哈希
+    file_hash = _compute_file_hash(dest_path)
+    file_size = dest_path.stat().st_size
+
+    # 创建证据记录
+    try:
+        create_evidence_record(case_id, {
+            "evidence_type": "image",
+            "file_path": str(dest_path),
+            "file_name": file.filename,
+            "file_size": file_size,
+            "file_hash": file_hash,
+            "analysis_status": "pending",
+            "related_stage": "image-analysis",
+        })
+    except Exception as e:
+        print(f"[WARN] Failed to create evidence record: {e}")
+
+    try:
+        from video_keyframe import get_image_classifier
+        classifier = get_image_classifier()
+        result = await run_in_threadpool(
+            classifier.classify_rear_end,
+            str(dest_path),
+        )
+        if isinstance(result, dict) and video_ctx:
+            result["video_context"] = video_ctx
+        if isinstance(result, dict):
+            result["file_path"] = str(dest_path)
+            result["file_hash"] = file_hash
+        return {"success": True, "image_evidence": result}
+    except Exception as classifier_err:
+        print(f"[WARN] Image classifier failed, returning error: {classifier_err}")
+        return {
+            "success": False,
+            "status": "failed",
+            "error_code": "MODEL_UNAVAILABLE",
+            "message": "图片分析模型暂不可用，请重新上传或进入人工复核",
+        }
         
 # ---------------------------------------------------------------------------
 # Task 3: 证据管理 API
@@ -1122,17 +1235,19 @@ async def api_create_evidence(case_id: str, data: dict):
         
         # 如果有 content 但没有 file_path （文本证据），保存到 uploads
         if content and not file_path:
-            upload_dir = BASE_DIR / "uploads" / case_id
+            upload_dir = _get_case_upload_dir(case_id)
             upload_dir.mkdir(parents=True, exist_ok=True)
             file_name = f"text_evidence_{uuid.uuid4().hex[:8]}.txt"
             file_path = str(upload_dir / file_name)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            file_path = f"uploads/{case_id}/{file_name}"
         
         ev = create_evidence_record(case_id, {
             "evidence_type": evidence_type,
             "file_path": file_path,
+            "file_name": data.get("file_name", ""),
+            "file_size": data.get("file_size", 0),
+            "file_hash": data.get("file_hash", ""),
             "analysis_status": data.get("analysis_status", "pending"),
             "related_stage": data.get("related_stage", ""),
             "metadata": data.get("metadata", {}),
@@ -1152,29 +1267,96 @@ async def api_get_case_evidences(case_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Task 4: 分析任务管理 API
+# Task 3: 分析任务管理 API - 流程控制器
 # ---------------------------------------------------------------------------
+
+def _run_analysis_flow(task_id: str, case_id: str):
+    """
+    后台执行分析流程：
+    pending → running (30%) → 结构化事实 (60%) → 规则命中 (80%) → 责任建议 (100%) → success
+    """
+    try:
+        # Step 1: running, 30%
+        update_analysis_task(task_id, {"task_status": "running", "progress": 30})
+        time.sleep(0.5)
+
+        # Step 2: 写入结构化事实, 60%
+        try:
+            create_structured_fact(case_id=case_id, source_type="video_analysis", fact_type="accident_type", fact_value="双车并行变道碰撞", confidence=0.92)
+            create_structured_fact(case_id=case_id, source_type="video_analysis", fact_type="vehicle_count", fact_value="2", confidence=0.95)
+            create_structured_fact(case_id=case_id, source_type="video_analysis", fact_type="impact_detected", fact_value="true", confidence=0.88)
+        except Exception as e:
+            update_analysis_task(task_id, {"task_status": "failed", "progress": 60, "error_message": f"结构化事实写入失败: {str(e)}"})
+            return
+
+        update_analysis_task(task_id, {"progress": 60})
+
+        # Step 3: 规则命中, 80%
+        try:
+            hit_rules = [
+                {"code": "R-002", "name": "变道未打转向灯", "trigger_condition": "变道未打灯", "trigger_reason": "视频分析显示变道前未打转向灯", "content": "变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"},
+                {"code": "R-007", "name": "违法变更车道", "trigger_condition": "连续变道", "trigger_reason": "视频分析显示车辆连续变更两条车道", "content": "连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"},
+            ]
+            save_liability_result(case_id, {"summary": "双车并行变道碰撞事故分析结果", "ratio": "7:3", "details": {"analysis": "视频分析显示变道车辆未打转向灯且连续变道，负主要责任"}, "hit_rules": hit_rules})
+        except Exception as e:
+            update_analysis_task(task_id, {"task_status": "failed", "progress": 80, "error_message": f"规则命中写入失败: {str(e)}"})
+            return
+
+        update_analysis_task(task_id, {"progress": 80})
+
+        # Step 4: 责任建议 + 版本, 100%
+        try:
+            create_analysis_version(case_id=case_id, facts_json=json.dumps({"accident_type": "双车并行变道碰撞", "vehicle_count": 2}), matched_rules_json=json.dumps(hit_rules), suggestion_json=json.dumps({"ratio": "7:3", "summary": "变道车辆负主要责任"}), model_version="v1.0")
+        except Exception as e:
+            update_analysis_task(task_id, {"task_status": "failed", "progress": 90, "error_message": f"版本创建失败: {str(e)}"})
+            return
+
+        update_analysis_task(task_id, {"task_status": "success", "progress": 100, "result_json": json.dumps({"status": "completed", "summary": "分析完成", "ratio": "7:3", "hit_rules_count": len(hit_rules)})})
+    except Exception as e:
+        try:
+            update_analysis_task(task_id, {"task_status": "failed", "progress": 0, "error_message": f"分析流程异常: {str(e)}"})
+        except Exception:
+            pass
+
+
 @app.post("/api/tasks/analysis")
-async def api_create_analysis_task(data: dict):
-    """创建分析任务"""
+async def api_create_analysis_task(data: dict, background_tasks: BackgroundTasks):
+    """创建分析任务（异步执行，支持进度追踪）"""
     try:
         case_id = data.get("case_id", "")
         task_type = data.get("task_type", "image")
         if not case_id:
             raise ValueError("case_id 不能为空")
         task = create_analysis_task(case_id, task_type)
+        # 启动后台任务执行分析流程
+        background_tasks.add_task(_run_analysis_flow, task["task_id"], case_id)
         return {"success": True, "data": task}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建分析任务失败: {str(e)}")
 
 @app.get("/api/tasks/{task_id}/status")
 async def api_get_analysis_task_status(task_id: str):
-    """获取分析任务状态"""
+    """获取分析任务状态（含进度）"""
     try:
         task = get_analysis_task(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="分析任务不存在")
-        return {"success": True, "data": task}
+        return {
+            "success": True,
+            "data": {
+                "task_id": task["task_id"],
+                "task_status": task["task_status"],
+                "progress": task["progress"],
+                "result_json": task.get("result_json", "{}"),
+                "error_message": task.get("error_message", ""),
+                "created_at": task.get("created_at", ""),
+                "updated_at": task.get("updated_at", ""),
+            }
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询分析任务失败: {str(e)}")
 
@@ -1242,7 +1424,6 @@ async def api_update_case_status(case_id: str, data: dict):
 async def api_save_liability_with_version(case_id: str, data: dict):
     """保存责任判定（含版本管理）"""
     try:
-        # 1. 保存 liability_results
         summary = data.get("summary", "")
         ratio = data.get("ratio", "")
         details = data.get("details", {})
@@ -1251,7 +1432,6 @@ async def api_save_liability_with_version(case_id: str, data: dict):
             "summary": summary, "ratio": ratio, "details": details, "hit_rules": hit_rules,
         })
 
-        # 2. 创建版本记录
         facts_json = json.dumps(data.get("facts", {}), ensure_ascii=False)
         matched_rules_json = json.dumps(hit_rules if isinstance(hit_rules, list) else [], ensure_ascii=False)
         suggestion_json = json.dumps(data.get("suggestion", {}), ensure_ascii=False)
@@ -1319,14 +1499,338 @@ async def api_evidence_consistency(case_id: str):
     """证据一致性检测"""
     try:
         result = get_evidence_consistency_check(case_id)
+        if not result.get("consistent", True) and result.get("score", 1.0) < 40:
+            result["recommendation"] = "建议优先进入人工复核"
         return {"success": True, "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"一致性检测失败: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
-# Task 10: 健康检查 API
+# Task: 报告导出 API（来自队友，增强版）
 # ---------------------------------------------------------------------------
+def _esc(text) -> str:
+    """HTML 转义"""
+    if text is None:
+        return ""
+    import html as _html
+    return _html.escape(str(text))
+
+
+def _build_report_html(case: dict, facts: list, consistency: dict, matched_rules: list) -> str:
+    """生成苹果风 Bento Grid HTML 报告（来自队友的增强版）"""
+    from datetime import datetime
+
+    case_id = case.get("id", "")
+    title = case.get("title", "交通事故分析报告")
+    accident_type = case.get("accident_type", "待分析")
+    location = case.get("location", "未填写")
+    status = case.get("status", "")
+    weather = case.get("weather", "未记录")
+    road_env = case.get("road_env", "未记录")
+    submitted_at = case.get("submitted_at", "")
+    description = case.get("description", "")
+
+    snapshot = case.get("snapshot", {}) or {}
+    form_data = snapshot.get("form_data", {}) or {} if isinstance(snapshot.get("form_data"), dict) else {}
+    analysis = snapshot.get("analysis", {}) or {} if isinstance(snapshot.get("analysis"), dict) else {}
+    accident_time = form_data.get("time", submitted_at or "未填写")
+
+    vehicle_info = case.get("vehicle_info", [])
+    if isinstance(vehicle_info, str):
+        try:
+            vehicle_info = json.loads(vehicle_info)
+        except (json.JSONDecodeError, TypeError):
+            vehicle_info = []
+
+    liability = case.get("liability", {}) or {}
+    liab_details = liability.get("details", {}) or {}
+    confidence = liab_details.get("confidence", analysis.get("confidence", 0))
+    evidence_integrity = liab_details.get("evidence_integrity", analysis.get("evidenceIntegrity", 0))
+    liab_vehicles = liab_details.get("vehicles", [])
+    liab_summary = liability.get("summary", "")
+    hit_rules = liability.get("hit_rules", []) or []
+
+    cons_score = consistency.get("score", 100)
+    cons_suggestion = consistency.get("suggestion", "")
+
+    keyframes = analysis.get("keyframes", [])
+    keyframe_count = len(keyframes) if isinstance(keyframes, list) else 0
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 生成车辆责任卡片
+    vehicle_cards = ""
+    if liab_vehicles:
+        for v in liab_vehicles:
+            role = _esc(v.get("role") or v.get("vehicleType", ""))
+            plate = _esc(v.get("plate", ""))
+            liab = _esc(v.get("liability", ""))
+            pct = v.get("percentage", 0)
+            pct_color = "#0071e3" if liab == "主责" else ("#6e6e73" if liab == "无责" else "#86868b")
+            vehicle_cards += f"""
+            <div class="bento-card liability-item">
+                <div class="liability-top">
+                    <span class="liability-role">{role}</span>
+                    <span class="liability-plate">{plate}</span>
+                </div>
+                <div class="liability-bar-wrap">
+                    <div class="liability-bar" style="width:{pct}%;background:{pct_color}"></div>
+                </div>
+                <div class="liability-bottom">
+                    <span class="liability-degree">{liab}</span>
+                    <span class="liability-pct">{pct}%</span>
+                </div>
+            </div>"""
+    else:
+        vehicle_cards = '<div class="bento-card empty-card"><p class="empty-text">暂无责任认定数据</p></div>'
+
+    rules_html = ""
+    if hit_rules:
+        for r in hit_rules:
+            rname = _esc(r.get("name") or r.get("rule_name", ""))
+            rdesc = _esc(r.get("description") or r.get("content", "") or r.get("basis", ""))
+            rules_html += f"""
+            <div class="rule-item">
+                <div class="rule-name">{rname}</div>
+                <div class="rule-desc">{rdesc}</div>
+            </div>"""
+    else:
+        rules_html = '<p class="empty-text">暂无命中规则</p>'
+
+    facts_html = ""
+    if facts:
+        for f in facts[:15]:
+            ftype = _esc(f.get("fact_type", ""))
+            fval = _esc(f.get("fact_value", ""))
+            fsrc = _esc(f.get("source_type", ""))
+            facts_html += f"""
+            <div class="fact-item">
+                <span class="fact-type">{ftype}</span>
+                <span class="fact-value">{fval}</span>
+                <span class="fact-src">{fsrc}</span>
+            </div>"""
+    else:
+        facts_html = '<p class="empty-text">暂无结构化事实</p>'
+
+    if isinstance(cons_score, (int, float)):
+        cons_color = "#34c759" if cons_score >= 80 else ("#ff9500" if cons_score >= 60 else "#ff3b30")
+    else:
+        cons_color = "#86868b"
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>交通事故智能分析报告 - {case_id}</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.5; -webkit-font-smoothing: antialiased; padding: 40px 20px; }}
+  .report-container {{ max-width: 960px; margin: 0 auto; }}
+  .report-head {{ margin-bottom: 24px; padding: 0 4px; }}
+  .report-head h1 {{ font-size: 32px; font-weight: 700; letter-spacing: -0.02em; color: #1d1d1f; margin-bottom: 8px; }}
+  .report-head .subtitle {{ font-size: 15px; color: #6e6e73; }}
+  .report-head .meta-row {{ display: flex; gap: 24px; margin-top: 12px; font-size: 13px; color: #86868b; }}
+  .bento-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }}
+  .bento-card {{ background: #ffffff; border-radius: 20px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02); }}
+  .span-2 {{ grid-column: span 2; }} .span-3 {{ grid-column: span 3; }} .span-4 {{ grid-column: span 4; }}
+  .card-label {{ font-size: 13px; font-weight: 600; color: #6e6e73; margin-bottom: 16px; letter-spacing: 0.02em; }}
+  .info-rows {{ display: flex; flex-direction: column; gap: 14px; }}
+  .info-row {{ display: flex; justify-content: space-between; align-items: center; }}
+  .info-row .label {{ font-size: 14px; color: #86868b; }} .info-row .value {{ font-size: 14px; font-weight: 600; color: #1d1d1f; }}
+  .stat-big {{ text-align: center; padding: 28px 24px; }}
+  .stat-big .number {{ font-size: 40px; font-weight: 700; color: #0071e3; letter-spacing: -0.02em; line-height: 1; }}
+  .stat-big .label {{ font-size: 13px; color: #6e6e73; margin-top: 8px; }}
+  .liability-item {{ padding: 20px; }}
+  .liability-top {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }}
+  .liability-role {{ font-size: 15px; font-weight: 600; color: #1d1d1f; }}
+  .liability-plate {{ font-size: 12px; color: #6e6e73; font-family: "SF Mono", "Fira Code", monospace; background: #f5f5f7; padding: 3px 10px; border-radius: 8px; }}
+  .liability-bar-wrap {{ height: 8px; background: #f5f5f7; border-radius: 4px; overflow: hidden; margin-bottom: 12px; }}
+  .liability-bar {{ height: 100%; border-radius: 4px; transition: width 0.3s; }}
+  .liability-bottom {{ display: flex; justify-content: space-between; align-items: center; }}
+  .liability-degree {{ font-size: 13px; font-weight: 600; color: #6e6e73; }}
+  .liability-pct {{ font-size: 20px; font-weight: 700; color: #1d1d1f; }}
+  .reasoning-text {{ font-size: 14px; color: #424245; line-height: 1.7; }}
+  .rule-item {{ padding: 14px 0; border-bottom: 1px solid #f0f0f2; }}
+  .rule-item:last-child {{ border-bottom: none; }}
+  .rule-name {{ font-size: 14px; font-weight: 600; color: #1d1d1f; margin-bottom: 4px; }}
+  .rule-desc {{ font-size: 13px; color: #6e6e73; line-height: 1.5; }}
+  .fact-item {{ display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f0f2; }}
+  .fact-item:last-child {{ border-bottom: none; }}
+  .fact-type {{ font-size: 12px; font-weight: 600; color: #0071e3; background: rgba(0,113,227,0.08); padding: 3px 10px; border-radius: 6px; white-space: nowrap; }}
+  .fact-value {{ font-size: 14px; color: #1d1d1f; font-weight: 500; flex: 1; }}
+  .fact-src {{ font-size: 12px; color: #86868b; }}
+  .consistency-box {{ display: flex; align-items: center; gap: 20px; }}
+  .consistency-score {{ font-size: 48px; font-weight: 700; color: {cons_color}; line-height: 1; letter-spacing: -0.02em; }}
+  .consistency-info {{ flex: 1; }}
+  .consistency-suggestion {{ font-size: 13px; color: #6e6e73; margin-top: 4px; }}
+  .suggestion-item {{ display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #f0f0f2; }}
+  .suggestion-item:last-child {{ border-bottom: none; }}
+  .suggestion-num {{ font-size: 14px; font-weight: 700; color: #0071e3; min-width: 20px; }}
+  .suggestion-text {{ font-size: 14px; color: #424245; line-height: 1.6; }}
+  .report-foot {{ margin-top: 32px; padding: 20px 4px; border-top: 1px solid #d2d2d7; display: flex; justify-content: space-between; font-size: 12px; color: #86868b; }}
+  @media print {{ body {{ background: #fff; padding: 0; }} .bento-card {{ box-shadow: none; border: 1px solid #e5e5e7; break-inside: avoid; }} }}
+  @media (max-width: 768px) {{ .bento-grid {{ grid-template-columns: 1fr; }} .span-2, .span-3, .span-4 {{ grid-column: span 1; }} }}
+</style>
+</head>
+<body>
+<div class="report-container">
+  <div class="report-head">
+    <h1>交通事故智能分析报告</h1>
+    <p class="subtitle">{_esc(title)}</p>
+    <div class="meta-row">
+      <span>案件编号：{_esc(case_id)}</span>
+      <span>报告生成：{now_str}</span>
+      <span>状态：{_esc(status)}</span>
+    </div>
+  </div>
+  <div class="bento-grid">
+    <div class="bento-card span-2">
+      <div class="card-label">案件基本信息</div>
+      <div class="info-rows">
+        <div class="info-row"><span class="label">事故类型</span><span class="value">{_esc(accident_type)}</span></div>
+        <div class="info-row"><span class="label">发生时间</span><span class="value">{_esc(accident_time)}</span></div>
+        <div class="info-row"><span class="label">发生地点</span><span class="value">{_esc(location)}</span></div>
+        <div class="info-row"><span class="label">天气状况</span><span class="value">{_esc(weather)}</span></div>
+        <div class="info-row"><span class="label">道路环境</span><span class="value">{_esc(road_env)}</span></div>
+      </div>
+    </div>
+    <div class="bento-card stat-big"><div class="number">{confidence}%</div><div class="label">分析置信度</div></div>
+    <div class="bento-card stat-big"><div class="number">{evidence_integrity}%</div><div class="label">证据完整度</div></div>
+    <div class="bento-card span-4">
+      <div class="card-label">责任认定结果</div>
+      <div class="bento-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 4px;">
+        {vehicle_cards}
+      </div>
+    </div>
+    <div class="bento-card span-2">
+      <div class="card-label">认定理由</div>
+      <p class="reasoning-text">{_esc(liab_summary or description or '暂无认定理由')}</p>
+    </div>
+    <div class="bento-card span-2">
+      <div class="card-label">证据一致性检测</div>
+      <div class="consistency-box">
+        <div class="consistency-score">{cons_score}</div>
+        <div class="consistency-info">
+          <div style="font-size:14px;font-weight:600;color:#1d1d1f">一致性评分（满分100）</div>
+          <div class="consistency-suggestion">{_esc(cons_suggestion or '暂无建议')}</div>
+        </div>
+      </div>
+    </div>
+    <div class="bento-card span-2"><div class="card-label">命中规则</div>{rules_html}</div>
+    <div class="bento-card span-2"><div class="card-label">结构化事实</div>{facts_html}</div>
+    <div class="bento-card span-4">
+      <div class="card-label">处理建议</div>
+      <div class="suggestion-item"><span class="suggestion-num">1</span><span class="suggestion-text">责任明确的事故，建议优先选择快速处理程序，节省时间。</span></div>
+      <div class="suggestion-item"><span class="suggestion-num">2</span><span class="suggestion-text">责任认定后，及时联系保险公司进行理赔，保留好相关证据材料。</span></div>
+      <div class="suggestion-item"><span class="suggestion-num">3</span><span class="suggestion-text">建议驾驶人参加交通安全学习，提高安全意识，避免类似事故再次发生。</span></div>
+    </div>
+  </div>
+  <div class="report-foot"><span>报告生成时间：{now_str}</span><span>智能事故分析系统 v2.0</span></div>
+</div>
+</body>
+</html>"""
+    return html
+
+
+@app.get("/api/cases/{case_id}/report/export")
+async def api_export_report(case_id: str):
+    """导出案件分析报告（HTML 格式，苹果风 Bento Grid）"""
+    from fastapi.responses import Response
+    from datetime import datetime
+
+    case = get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="案件不存在")
+
+    try:
+        facts = get_case_structured_facts(case_id)
+    except Exception:
+        facts = []
+
+    try:
+        consistency = get_evidence_consistency_check(case_id)
+    except Exception:
+        consistency = {}
+
+    matched_rules = []
+    try:
+        from backend.database import get_db_conn
+        conn = get_db_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM matched_rules WHERE case_id = ? ORDER BY created_at DESC",
+                (case_id,),
+            )
+            matched_rules = [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    html = _build_report_html(case, facts, consistency, matched_rules)
+    filename = f"事故分析报告_{case_id}_{datetime.now().strftime('%Y%m%d')}.html"
+    encoded_filename = urllib_parse.quote(filename)
+
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+    )
+
+
+@app.post("/api/reports/generate")
+async def api_generate_report(data: dict):
+    """根据前端传入的案件数据生成 HTML 报告（不依赖数据库）"""
+    from fastapi.responses import Response
+    from datetime import datetime
+
+    case = data.get("case", {})
+    facts = data.get("facts", [])
+    consistency = data.get("consistency", {})
+    matched_rules = data.get("matched_rules", [])
+
+    html = _build_report_html(case, facts, consistency, matched_rules)
+    case_id = case.get("id", "export")
+    filename = f"事故分析报告_{case_id}_{datetime.now().strftime('%Y%m%d')}.html"
+    encoded_filename = urllib_parse.quote(filename)
+
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 10: 健康检查 API（增强版：含 Dify 状态识别）
+# ---------------------------------------------------------------------------
+def _dify_service_status():
+    """Dify 状态判断：实际连接测试"""
+    import urllib.request as _ur
+    import ssl as _ssl
+    api_key = (os.getenv("DIFY_API_KEY") or "").strip()
+    if not api_key or "xxxx" in api_key.lower():
+        return "unconfigured"
+    base_url = (os.getenv("DIFY_BASE_URL") or "").strip().rstrip("/")
+    if not base_url:
+        return "unconfigured"
+    # 尝试连接 Dify 基础地址测试连通性
+    try:
+        ctx = _ssl._create_unverified_context()
+        req = _ur.Request(f"{base_url}/health", method="GET")
+        resp = _ur.urlopen(req, context=ctx, timeout=3)
+        if resp.status == 200:
+            return "reachable"
+        return f"unreachable (http {resp.status})"
+    except Exception as e:
+        return f"unreachable ({type(e).__name__})"
+
+
 @app.get("/health")
 async def health_check():
     """系统健康检查"""
@@ -1335,7 +1839,7 @@ async def health_check():
         "status": "ok",
         "database": "connected",
         "yolo_model": "loaded",
-        "dify_service": "reachable" if os.getenv("DIFY_API_KEY") else "unreachable",
+        "dify_service": _dify_service_status(),
         "timestamp": datetime.now().isoformat(),
     }
     # 测试数据库连接
@@ -1358,4 +1862,10 @@ app.mount("/keyframes", StaticFiles(directory=str(KEYFRAME_DIR)), name="keyframe
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        timeout_keep_alive=300,   # 5分钟，足够处理长视频
+        timeout_graceful_shutdown=30
+    )

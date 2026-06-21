@@ -182,6 +182,47 @@ export const CasesAPI = {
     return request('POST', `/api/cases/${caseId}/liability`, data)
   },
 
+  async getEvidenceConsistency(caseId) {
+    return request('GET', `/api/cases/${caseId}/evidence-consistency`)
+  },
+
+  async getEvidences(caseId) {
+    return request('GET', `/api/cases/${caseId}/evidences`)
+  },
+
+  async getFacts(caseId) {
+    return request('GET', `/api/cases/${caseId}/facts`)
+  },
+
+  async getLiabilityLatest(caseId) {
+    return request('GET', `/api/cases/${caseId}/liability-latest`)
+  },
+
+  async exportReport(caseId) {
+    const response = await fetch(`${API_BASE}/api/cases/${caseId}/report/export`)
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('案件数据不存在，请先在系统中保存案件后再导出')
+      }
+      throw new Error(`导出失败: ${response.status}`)
+    }
+    const blob = await response.blob()
+    return blob
+  },
+
+  async generateReport(caseData) {
+    const response = await fetch(`${API_BASE}/api/reports/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ case: caseData })
+    })
+    if (!response.ok) {
+      throw new Error(`导出失败: ${response.status}`)
+    }
+    const blob = await response.blob()
+    return blob
+  },
+
   async continueEditing(caseId) {
     return this.getDetail(caseId)
   }
@@ -301,11 +342,19 @@ export const StatsAPI = {
   }
 }
 
+// 健康检查API
+export const HealthAPI = {
+  async check() {
+    return request('GET', '/health')
+  }
+}
+
 export default {
   auth: AuthAPI,
   cases: CasesAPI,
   rules: RulesAPI,
   tasks: TasksAPI,
   flow: FlowAPI,
-  stats: StatsAPI
+  stats: StatsAPI,
+  health: HealthAPI
 }

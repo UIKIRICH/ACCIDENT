@@ -5,18 +5,6 @@
         <h1 class="page-title">首页总览</h1>
         <p class="page-subtitle">查看平台整体运行状态与最新动态</p>
       </div>
-      <div class="header-actions">
-        <button class="refresh-btn" @click="refreshData">
-          <span class="refresh-icon" v-html="icons.refresh"></span>
-          刷新数据
-        </button>
-      </div>
-    </div>
-
-    <div class="quick-entry-section">
-      <div class="quick-entry-header">
-        <h2 class="quick-entry-title">快捷入口</h2>
-      </div>
       <div class="quick-entry-buttons">
         <button v-if="state.step !== 'intake' && state.step !== 'archived'" class="quick-entry-btn primary" @click="continueCurrentCase">
           <span class="btn-icon" v-html="icons.play"></span>
@@ -32,6 +20,42 @@
           历史案例
         </button>
       </div>
+      <div class="header-actions">
+        <div class="system-status-card" v-if="healthData">
+          <div class="status-card-header">
+            <div class="status-card-title">
+              <span class="status-pulse" :class="overallStatusClass"></span>
+              系统运行状态
+            </div>
+            <span class="status-card-time" v-if="healthTime">{{ healthTime }}</span>
+          </div>
+          <div class="status-indicators">
+            <div class="status-indicator" v-for="item in statusIndicators" :key="item.key">
+              <span class="indicator-dot" :class="item.dotClass"></span>
+              <span class="indicator-label">{{ item.label }}</span>
+              <span class="indicator-value" :class="item.valueClass">{{ item.text }}</span>
+            </div>
+          </div>
+          <div class="status-metrics">
+            <div class="status-metric">
+              <span class="metric-value">{{ pendingTasksCount }}</span>
+              <span class="metric-label">待处理任务</span>
+            </div>
+            <div class="metric-divider"></div>
+            <div class="status-metric">
+              <span class="metric-value">{{ completedCasesCount }}</span>
+              <span class="metric-label">已完成案件</span>
+            </div>
+          </div>
+        </div>
+        <button class="refresh-btn" @click="refreshData">
+          <span class="refresh-icon" v-html="icons.refresh"></span>
+          刷新数据
+        </button>
+      </div>
+    </div>
+
+    <div class="quick-entry-section">
       <div class="current-case-status" v-if="state.step !== 'overview' && state.step !== 'archived'">
         <div class="status-item">
           <span class="status-label">当前案件:</span>
@@ -237,13 +261,15 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { notify } from '../composables/useToast'
-import { StatsAPI, CasesAPI, TasksAPI, RulesAPI } from '../api/index.js'
+import { StatsAPI, CasesAPI, TasksAPI, RulesAPI, HealthAPI } from '../api/index.js'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 
 const router = useRouter()
 const { 
   state, 
   resetFlow, 
+  updateForm,
+  goStep,
   getRecentCases, 
   getPendingTasks,
   completeTask,
@@ -254,6 +280,7 @@ const {
 onMounted(() => {
   if (initRuleLibrary) initRuleLibrary()
   refreshData()
+  fetchHealth()
 })
 
 const isRefreshing = ref(false)
@@ -279,6 +306,69 @@ const statsData = ref({
 const recentCases = ref([])
 const pendingTasksList = ref([])
 const loading = ref(false)
+
+// 系统运行状态
+const healthData = ref(null)
+const healthError = ref(false)
+
+const fetchHealth = async () => {
+  try {
+    const data = await HealthAPI.check()
+    healthData.value = data
+    healthError.value = false
+  } catch (e) {
+    console.warn('健康检查失败:', e)
+    healthError.value = true
+  }
+}
+
+const statusIndicators = computed(() => {
+  if (!healthData.value) return []
+  const h = healthData.value
+  return [
+    {
+      key: 'database',
+      label: '数据库',
+      dotClass: h.database === 'connected' ? 'dot-green' : 'dot-red',
+      valueClass: h.database === 'connected' ? 'text-green' : 'text-red',
+      text: h.database === 'connected' ? '正常' : '异常'
+    },
+    {
+      key: 'api',
+      label: 'API',
+      dotClass: healthError.value ? 'dot-red' : 'dot-green',
+      valueClass: healthError.value ? 'text-red' : 'text-green',
+      text: healthError.value ? '异常' : '正常'
+    },
+    {
+      key: 'yolo',
+      label: 'YOLO',
+      dotClass: h.yolo_model === 'loaded' ? 'dot-green' : 'dot-gray',
+      valueClass: h.yolo_model === 'loaded' ? 'text-green' : 'text-muted',
+      text: h.yolo_model === 'loaded' ? '正常' : '未配置'
+    },
+    {
+      key: 'dify',
+      label: 'Dify',
+      dotClass: h.dify_service === 'reachable' ? 'dot-green' : (h.dify_service === 'unconfigured' ? 'dot-gray' : 'dot-red'),
+      valueClass: h.dify_service === 'reachable' ? 'text-green' : (h.dify_service === 'unconfigured' ? 'text-muted' : 'text-red'),
+      text: h.dify_service === 'reachable' ? '正常' : (h.dify_service === 'unconfigured' ? '待配置' : '异常')
+    }
+  ]
+})
+
+const overallStatusClass = computed(() => {
+  if (!healthData.value) return 'pulse-gray'
+  if (healthError.value || healthData.value.database !== 'connected') return 'pulse-red'
+  return 'pulse-green'
+})
+
+const pendingTasksCount = computed(() => statsData.value.pendingTasks || pendingTasksList.value.length || 0)
+const completedCasesCount = computed(() => statsData.value.completedCases || 0)
+const healthTime = computed(() => {
+  if (!healthData.value?.timestamp) return ''
+  return new Date(healthData.value.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+})
 
 const totalPages = computed(() => Math.max(1, Math.ceil(recentCases.value.length / pageSize)))
 
@@ -390,6 +480,7 @@ const icons = {
 
 const getStatusClass = (status) => {
   const map = {
+    '待处理': 'badge-orange',
     '待分析': 'badge-orange',
     '待复核': 'badge-blue',
     '已完成': 'badge-green',
@@ -435,6 +526,9 @@ const refreshData = async () => {
   isRefreshing.value = true
   loading.value = true
   try {
+    // 0. 刷新系统运行状态
+    fetchHealth()
+
     // 1. 获取统计数据
     try {
       const statsResult = await StatsAPI.getOverview()
@@ -564,21 +658,33 @@ const editCase = (caseItem) => {
 
 const continueEditCase = async (caseItem) => {
   try {
-    // 尝试直接从store中恢复案件数据
-    const archivedCase = state.archivedCases.find(c => c.caseId === caseItem.id)
-    if (archivedCase && archivedCase.snapshot) {
+    const result = await CasesAPI.get(caseItem.id)
+    if (result.success && result.data) {
+      const c = result.data
       resetFlow()
-      Object.assign(state, archivedCase.snapshot.state)
-      state.caseId = caseItem.id
-      
-      notify({ title: '恢复成功', message: `已恢复案件 ${caseItem.id}，请继续处理`, type: 'success' })
-      // 根据案件当前状态跳转到对应页面
-      continueCurrentCase()
+      state.caseId = c.id
+      updateForm({
+        accidentType: c.accident_type || c.title || '',
+        location: c.location || '',
+        time: c.submitted_at || '',
+        description: c.description || '',
+        weather: c.weather || '',
+        roadEnv: c.road_env || '',
+      })
+      if (Array.isArray(c.vehicle_info) && c.vehicle_info.length > 0) {
+        updateForm({ vehicles: c.vehicle_info })
+      }
+      goStep('accident-entry')
+      notify({ title: '恢复成功', message: `已恢复案件 ${c.id}，请继续处理`, type: 'success' })
+      router.push('/video-processing')
     } else {
-      notify({ title: '恢复失败', message: '无法找到案件数据', type: 'error' })
+      notify({ title: '案件不存在', message: `案件 ${caseItem.id} 未找到，可能已被删除`, type: 'warning' })
+      // 刷新列表以移除无效案件
+      refreshData()
     }
   } catch (error) {
-    notify({ title: '错误', message: '恢复案件失败', type: 'error' })
+    console.error('恢复案件失败:', error)
+    notify({ title: '错误', message: '恢复案件失败，请重试', type: 'error' })
   }
 }
 
@@ -651,15 +757,16 @@ const getNextStepLabel = (step) => {
 }
 
 .page-header {
-  margin-bottom: var(--space-8);
+  margin-bottom: var(--space-6);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
+  flex-wrap: wrap;
 }
 
 .header-content {
-  flex: 1;
+  flex-shrink: 0;
 }
 
 .page-title {
@@ -679,6 +786,152 @@ const getNextStepLabel = (step) => {
 .header-actions {
   display: flex;
   gap: var(--space-3);
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* 系统运行状态卡片 */
+.system-status-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-sm);
+  min-width: 320px;
+  transition: box-shadow var(--transition-normal);
+}
+
+.system-status-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.status-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.status-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.status-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  animation: pulse-ring 1.8s var(--ease-default) infinite;
+}
+
+.pulse-green { background: var(--success-500); }
+.pulse-green::after { background: rgba(34, 197, 94, 0.35); }
+.pulse-red { background: var(--danger-500); }
+.pulse-red::after { background: rgba(239, 68, 68, 0.35); }
+.pulse-gray { background: var(--text-muted); }
+.pulse-gray::after { background: rgba(148, 163, 184, 0.35); }
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.status-card-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-indicators {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+}
+
+.indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+[data-theme="dark"] .indicator-dot {
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.6);
+}
+
+.dot-green { background: var(--success-500); }
+.dot-red { background: var(--danger-500); }
+.dot-gray { background: var(--text-muted); }
+
+.indicator-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.indicator-value {
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.text-green { color: var(--success); }
+.text-red { color: var(--danger); }
+.text-muted { color: var(--text-muted); }
+
+.status-metrics {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.status-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-value {
+  font-size: var(--text-xl);
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.metric-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-light);
 }
 
 .refresh-btn {
@@ -709,38 +962,30 @@ const getNextStepLabel = (step) => {
 }
 
 .quick-entry-section {
-  margin-bottom: var(--space-8);
-}
-
-.quick-entry-header {
-  margin-bottom: var(--space-4);
-}
-
-.quick-entry-title {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  color: var(--text-primary);
+  margin-bottom: var(--space-6);
 }
 
 .quick-entry-buttons {
   display: flex;
-  gap: var(--space-4);
+  gap: var(--space-3);
   flex-wrap: wrap;
+  justify-content: center;
+  flex: 1;
 }
 
 .quick-entry-btn {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: 16px 28px;
-  border-radius: var(--radius-xl);
-  font-size: var(--text-lg);
-  font-weight: 700;
+  gap: var(--space-2);
+  padding: 10px 18px;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  font-weight: 600;
   cursor: pointer;
   transition: all var(--transition-normal);
   border: 2px solid transparent;
   font-family: var(--font-sans);
-  min-width: 160px;
+  white-space: nowrap;
   justify-content: center;
 }
 
@@ -770,8 +1015,8 @@ const getNextStepLabel = (step) => {
 }
 
 .btn-icon {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
 }
 
@@ -1245,12 +1490,15 @@ const getNextStepLabel = (step) => {
 @media (max-width: 1200px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .content-grid { grid-template-columns: 1fr; }
+  .page-header { flex-wrap: wrap; }
+  .quick-entry-buttons { flex: 1 1 100%; order: 2; }
 }
 
 @media (max-width: 768px) {
   .stats-grid { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; align-items: stretch; }
-  .header-actions { margin-top: var(--space-4); }
+  .header-actions { margin-top: var(--space-4); flex-wrap: wrap; }
+  .quick-entry-buttons { flex-wrap: wrap; }
   .cases-pagination, .tasks-pagination { align-items: flex-start; flex-direction: column; }
   .pagination-buttons { width: 100%; justify-content: center; }
 }

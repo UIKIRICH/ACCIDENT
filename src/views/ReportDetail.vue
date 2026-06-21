@@ -16,7 +16,7 @@
           <polyline points="7 10 12 15 17 10"></polyline>
           <line x1="12" y1="15" x2="12" y2="3"></line>
         </svg>
-        下载报告
+        导出报告
       </button>
     </div>
 
@@ -147,9 +147,14 @@ async function loadCaseLiability() {
         state.analysis.evidenceIntegrity = liability.details?.evidence_integrity || state.analysis.evidenceIntegrity
         state.analysis.reasoningText = liability.summary || ''
       }
+    } else {
+      // 案件不存在
+      notify({ title: '案件不存在', message: `案件 ${state.caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (e) {
     console.warn('加载责任结果失败:', e)
+    notify({ title: '加载失败', message: '无法加载案件数据，请重试', type: 'error' })
   }
 }
 
@@ -239,62 +244,46 @@ const getReasoningText = () => {
   }
 }
 
-const downloadReport = () => {
-  const divider = '='.repeat(60)
-  let report = ''
+const downloadReport = async () => {
+  try {
+    // 构建案件数据，用前端 state 中的数据直接生成报告
+    const caseData = {
+      id: state.caseId || 'export',
+      title: state.form.accidentType ? `${state.form.accidentType}分析报告` : '交通事故分析报告',
+      accident_type: state.form.accidentType || '待分析',
+      location: state.form.location || '未填写',
+      status: '已分析',
+      weather: state.form.weather || '未记录',
+      road_env: state.form.roadEnv || '未记录',
+      vehicle_info: state.form.vehicles || [],
+      snapshot: {
+        form_data: { time: state.form.time || '' },
+        analysis: state.analysis || {}
+      },
+      liability: {
+        details: {
+          confidence: state.analysis.confidence || 0,
+          evidence_integrity: state.analysis.evidenceIntegrity || 0,
+          vehicles: vehicleLiabilities.value
+        },
+        summary: getReasoningText()
+      }
+    }
 
-  report += `${divider}\n`
-  report += `事故分析详细报告\n`
-  report += `${divider}\n\n`
-
-  report += `一、案件基本信息\n`
-  report += `-`.repeat(40) + '\n'
-  report += `案件编号: ${state.caseId}\n`
-  report += `事故类型: ${state.form.accidentType || '待分析'}\n`
-  report += `发生时间: ${state.form.time || '未填写'}\n`
-  report += `发生地点: ${state.form.location || '未填写'}\n\n`
-
-  report += `二、分析结果概览\n`
-  report += `-`.repeat(40) + '\n'
-  report += `分析置信度: ${state.analysis.confidence || 0}%\n`
-  report += `证据完整度: ${state.analysis.evidenceIntegrity || 0}%\n`
-  report += `关键帧数量: ${state.analysis.keyframes.length || 0}帧\n`
-  report += `涉事车辆: ${state.form.vehicles.length || 0}辆\n\n`
-
-  report += `三、责任认定结果\n`
-  report += `-`.repeat(40) + '\n'
-  vehicleLiabilities.value.forEach(liability => {
-    const vehicleInfo = liability.role || liability.vehicleType
-    const plateInfo = liability.plate ? `(${liability.plate})` : ''
-    report += `${vehicleInfo}${plateInfo}: ${liability.liability} (${liability.percentage}%)\n`
-  })
-  report += '\n'
-
-  report += `四、认定理由\n`
-  report += `-`.repeat(40) + '\n'
-  report += `${getReasoningText()}\n\n`
-
-  report += `五、处理建议\n`
-  report += `-`.repeat(40) + '\n'
-  report += `1. 快速处理：责任明确的事故，建议优先选择快速处理程序，节省时间\n`
-  report += `2. 保险理赔：责任认定后，及时联系保险公司进行理赔，保留好相关证据\n`
-  report += `3. 安全教育：建议驾驶人参加交通安全学习，提高安全意识，避免类似事故\n\n`
-
-  report += `${divider}\n`
-  report += `报告生成时间: ${new Date().toLocaleString('zh-CN')}\n`
-  report += `分析系统版本: v2.0\n`
-  report += `${divider}\n`
-
-  const blob = new Blob([report], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `事故分析报告_${state.caseId}_${new Date().toISOString().slice(0, 10)}.txt`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-  notify({ title: '下载成功', message: '报告已保存到本地' })
+    const blob = await CasesAPI.generateReport(caseData)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `事故分析报告_${state.caseId || 'export'}_${new Date().toISOString().slice(0, 10)}.html`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    notify({ title: '导出成功', message: 'HTML 报告已下载到本地' })
+  } catch (e) {
+    console.error('导出报告失败:', e)
+    notify({ title: '导出失败', message: e.message || '请稍后重试', type: 'error' })
+  }
 }
 </script>
 

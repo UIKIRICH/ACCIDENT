@@ -288,6 +288,101 @@
         </div>
       </div>
 
+      <!-- 证据一致性检测 -->
+      <div class="section-card consistency-section" v-if="hasAnalysis">
+        <div class="section-header">
+          <div class="section-title-wrapper">
+            <span class="section-icon" v-html="icons.shield"></span>
+            <h2 class="section-title">证据一致性检测</h2>
+          </div>
+          <button class="consistency-refresh-btn" @click="loadConsistency" :disabled="consistencyLoading">
+            <span class="refresh-icon" :class="{ 'spinning': consistencyLoading }" v-html="icons.refresh"></span>
+            {{ consistencyLoading ? '检测中...' : '重新检测' }}
+          </button>
+        </div>
+
+        <div v-if="consistencyData" class="consistency-content">
+          <!-- 顶部：分数圆环 + 统计 -->
+          <div class="consistency-score-area">
+            <div class="consistency-ring" :class="scoreLevel">
+              <svg viewBox="0 0 120 120" class="ring-svg">
+                <circle cx="60" cy="60" r="52" class="ring-bg"/>
+                <circle cx="60" cy="60" r="52" class="ring-fill" :style="ringStyle"/>
+              </svg>
+              <div class="ring-center">
+                <span class="ring-score">{{ consistencyData.score }}</span>
+                <span class="ring-label">一致性评分</span>
+              </div>
+            </div>
+            <div class="consistency-summary">
+              <div class="summary-item summary-consistent">
+                <span class="summary-count">{{ consistentCount }}</span>
+                <span class="summary-label">一致项</span>
+              </div>
+              <div class="summary-item summary-conflict">
+                <span class="summary-count">{{ conflictCount }}</span>
+                <span class="summary-label">冲突项</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 中间：两列对比 -->
+          <div class="consistency-columns">
+            <div class="consistency-column consistent-column">
+              <div class="column-header">
+                <span class="column-icon icon-check">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                </span>
+                <span class="column-title">一致项</span>
+                <span class="column-count">{{ consistentCount }}</span>
+              </div>
+              <div class="column-list">
+                <div v-for="(item, i) in consistencyData.consistent_items" :key="'c'+i" class="consistency-item consistent-item">
+                  <span class="item-type">{{ item.fact_type }}</span>
+                  <span class="item-value">{{ item.value_a }}</span>
+                  <span class="item-source">{{ item.source_a }} ↔ {{ item.source_b }}</span>
+                </div>
+                <div v-if="consistentCount === 0" class="empty-tip">暂无一致项</div>
+              </div>
+            </div>
+            <div class="consistency-column conflict-column">
+              <div class="column-header">
+                <span class="column-icon icon-warn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                </span>
+                <span class="column-title">冲突项</span>
+                <span class="column-count">{{ conflictCount }}</span>
+              </div>
+              <div class="column-list">
+                <div v-for="(item, i) in consistencyData.conflict_items" :key="'f'+i" class="consistency-item conflict-item">
+                  <span class="item-type">{{ item.fact_type }}</span>
+                  <div class="conflict-values">
+                    <span class="conflict-value"><span class="conflict-src">{{ item.source_a }}</span> {{ item.value_a }}</span>
+                    <span class="conflict-vs">VS</span>
+                    <span class="conflict-value"><span class="conflict-src">{{ item.source_b }}</span> {{ item.value_b }}</span>
+                  </div>
+                </div>
+                <div v-if="conflictCount === 0" class="empty-tip">无冲突</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 底部：系统建议 -->
+          <div class="consistency-suggestion" :class="suggestionLevel">
+            <span class="suggestion-label">系统建议</span>
+            <span class="suggestion-divider"></span>
+            <span class="suggestion-text">{{ consistencyData.suggestion }}</span>
+          </div>
+        </div>
+
+        <div v-else class="pending-placeholder">
+          <div class="placeholder-content">
+            <span class="placeholder-icon" v-html="icons.shield"></span>
+            <span class="placeholder-text">{{ consistencyError || '点击"重新检测"进行证据一致性分析' }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 确认判定按钮 -->
       <div class="section-card confirm-section" v-if="hasAnalysis">
         <div class="confirm-actions">
@@ -305,13 +400,14 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { notify } from '../composables/useToast'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { CasesAPI } from '../api/index.js'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const {
   state,
@@ -367,7 +463,61 @@ onMounted(() => {
     loadCaseFromBackend(caseIdFromQuery)
   }
   loadCaseLiability()
+  loadConsistency()
 })
+
+// 证据一致性检测
+const consistencyData = ref(null)
+const consistencyLoading = ref(false)
+const consistencyError = ref('')
+
+const consistentCount = computed(() => consistencyData.value?.consistent_items?.length || 0)
+const conflictCount = computed(() => consistencyData.value?.conflict_items?.length || 0)
+
+const scoreLevel = computed(() => {
+  const s = consistencyData.value?.score
+  if (s == null) return ''
+  if (s >= 80) return 'level-high'
+  if (s >= 60) return 'level-mid'
+  return 'level-low'
+})
+
+const suggestionLevel = computed(() => {
+  const s = consistencyData.value?.score
+  if (s == null) return ''
+  if (s >= 80) return 'suggest-ok'
+  if (s >= 60) return 'suggest-warn'
+  return 'suggest-danger'
+})
+
+const ringStyle = computed(() => {
+  const score = consistencyData.value?.score ?? 0
+  const pct = Math.max(0, Math.min(100, score))
+  const circumference = 2 * Math.PI * 52
+  const offset = circumference * (1 - pct / 100)
+  return {
+    strokeDasharray: `${circumference}`,
+    strokeDashoffset: `${offset}`,
+  }
+})
+
+async function loadConsistency() {
+  if (!state.caseId) return
+  consistencyLoading.value = true
+  consistencyError.value = ''
+  try {
+    const result = await CasesAPI.getEvidenceConsistency(state.caseId)
+    if (result.success && result.data) {
+      consistencyData.value = result.data
+    } else {
+      consistencyError.value = result.message || '检测失败'
+    }
+  } catch (e) {
+    consistencyError.value = e.message || '网络错误'
+  } finally {
+    consistencyLoading.value = false
+  }
+}
 
 const clickhtml = () => {}
 
@@ -438,6 +588,12 @@ const extractLawName = (clue) => {
 const formatJsonToHtml = (jsonObj) => {
   if (!jsonObj || typeof jsonObj !== 'object') return ''
   
+  // 处理 Dify Mock 返回的嵌套结构
+  let dataToRender = jsonObj
+  if (jsonObj.result && typeof jsonObj.result === 'object') {
+    dataToRender = jsonObj.result
+  }
+  
   const labels = {
     'accident_type': '事故类型',
     'confidence': '置信度',
@@ -456,14 +612,28 @@ const formatJsonToHtml = (jsonObj) => {
     'score': '分数',
     'law_name': '法规名称',
     'article': '条款',
-    'applicability': '适用度'
+    'applicability': '适用度',
+    'case_analysis': '案件分析',
+    'vehicle_count': '车辆数量',
+    'evidence_summary': '证据摘要',
+    'additional_notes': '补充说明',
+    'primary_responsibility': '主要责任方',
+    'secondary_responsibility': '次要责任方',
+    'analysis_detail': '分析详情',
+    'hit_rules': '命中规则',
+    'structured_facts': '结构化事实',
+    'consistency_check': '一致性检测',
+    'trigger_condition': '触发条件',
+    'trigger_reason': '触发原因',
+    'content': '规则内容'
   }
   
   let html = ''
   
   const renderSection = (key, value, level = 0) => {
     const label = labels[key] || key
-    const indent = '  '.repeat(level)
+    const isMainSection = level === 0
+    const icon = isMainSection ? '📊' : '📋'
     
     if (Array.isArray(value)) {
       if (value.length === 0) return ''
@@ -482,19 +652,20 @@ const formatJsonToHtml = (jsonObj) => {
         }
       })
       
-      return `<div class="analysis-section">
+      return `<div class="analysis-section${isMainSection ? ' main-section' : ''}">
         <div class="section-header">
-          <span class="section-icon">📋</span>
+          <span class="section-icon">${icon}</span>
           <span class="section-title">${label}</span>
+          <span class="section-count">${value.length}项</span>
         </div>
         <div class="section-content">${itemsHtml}</div>
       </div>`
     }
     
-    if (typeof value === 'object') {
-      return `<div class="analysis-section">
+    if (typeof value === 'object' && value !== null) {
+      return `<div class="analysis-section${isMainSection ? ' main-section' : ''}">
         <div class="section-header">
-          <span class="section-icon">📊</span>
+          <span class="section-icon">${icon}</span>
           <span class="section-title">${label}</span>
         </div>
         <div class="section-content">${renderNestedObject(value, level + 1)}</div>
@@ -505,9 +676,9 @@ const formatJsonToHtml = (jsonObj) => {
       ? value.replace(/\\n/g, '').replace(/\\"/g, '"').trim()
       : (typeof value === 'number' ? (value * 100).toFixed(1) + '%' : value)
     
-    return `<div class="analysis-section">
+    return `<div class="analysis-section${isMainSection ? ' main-section' : ''}">
       <div class="section-header">
-        <span class="section-icon">📝</span>
+        <span class="section-icon">${icon}</span>
         <span class="section-title">${label}</span>
       </div>
       <div class="section-content">
@@ -524,7 +695,7 @@ const formatJsonToHtml = (jsonObj) => {
     return html
   }
   
-  for (const [key, value] of Object.entries(jsonObj)) {
+  for (const [key, value] of Object.entries(dataToRender)) {
     html += renderSection(key, value, 0)
   }
   
@@ -583,7 +754,19 @@ const parseMarkdown = (text) => {
   if (parsed) {
     let dataToFormat = parsed
     
-    if (parsed.final && typeof parsed.final === 'string') {
+    // 优先提取 result 字段（Dify 返回格式）
+    if (parsed.result && typeof parsed.result === 'object') {
+      dataToFormat = parsed.result
+    }
+    // 其次提取 answer 字段
+    else if (parsed.answer && typeof parsed.answer === 'string') {
+      const answerParsed = deeplyParseJson(parsed.answer)
+      if (answerParsed && typeof answerParsed === 'object') {
+        dataToFormat = answerParsed
+      }
+    }
+    // 提取 final 字段
+    else if (parsed.final && typeof parsed.final === 'string') {
       const finalContent = extractCodeBlock(parsed.final)
       const innerParsed = deeplyParseJson(finalContent)
       if (innerParsed) {
@@ -597,9 +780,9 @@ const parseMarkdown = (text) => {
   }
   
   let html = workingText
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '')
     .replace(/\\"/g, '"')
@@ -2711,5 +2894,354 @@ const confirmAnalysis = async () => {
   font-size: var(--text-sm);
   font-weight: 500;
   text-align: center;
+}
+
+/* ===== 证据一致性检测 ===== */
+.consistency-section {
+  grid-column: 1 / 3;
+}
+
+.consistency-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-sans);
+}
+
+.consistency-refresh-btn:hover:not(:disabled) {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.consistency-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.consistency-refresh-btn .refresh-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.consistency-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* 顶部：圆环 + 统计 */
+.consistency-score-area {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-4);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-2xl);
+}
+
+.consistency-ring {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  flex-shrink: 0;
+}
+
+.ring-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ring-bg {
+  fill: none;
+  stroke: var(--border-light);
+  stroke-width: 10;
+}
+
+.ring-fill {
+  fill: none;
+  stroke-width: 10;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.8s ease;
+}
+
+.consistency-ring.level-high .ring-fill { stroke: #22c55e; }
+.consistency-ring.level-mid .ring-fill { stroke: #f59e0b; }
+.consistency-ring.level-low .ring-fill { stroke: #ef4444; }
+
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.ring-score {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.ring-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.consistency-summary {
+  display: flex;
+  gap: var(--space-4);
+  flex: 1;
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius-xl);
+  flex: 1;
+}
+
+.summary-consistent {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.summary-conflict {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.summary-count {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.summary-consistent .summary-count { color: #16a34a; }
+.summary-conflict .summary-count { color: #dc2626; }
+
+.summary-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* 中间：两列对比 */
+.consistency-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.consistency-column {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  border: 1px solid transparent;
+}
+
+.consistent-column {
+  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.conflict-column {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.column-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-weight: 700;
+  font-size: var(--text-sm);
+}
+
+.consistent-column .column-header { background: rgba(34, 197, 94, 0.12); color: #15803d; }
+.conflict-column .column-header { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+
+.column-icon {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: white;
+  flex-shrink: 0;
+}
+
+.column-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.icon-check { background: #22c55e; }
+.icon-warn { background: #ef4444; }
+
+.column-title { flex: 1; }
+
+.column-count {
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.consistent-column .column-count { background: rgba(34, 197, 94, 0.2); color: #15803d; }
+.conflict-column .column-count { background: rgba(239, 68, 68, 0.2); color: #b91c1c; }
+
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  flex: 1;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.consistency-item {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.consistent-item {
+  background: rgba(255, 255, 255, 0.7);
+  border-left: 3px solid #22c55e;
+}
+
+.conflict-item {
+  background: rgba(255, 255, 255, 0.7);
+  border-left: 3px solid #ef4444;
+}
+
+.item-type {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.item-value {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.item-source {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.conflict-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conflict-value {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.conflict-src {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-right: 4px;
+}
+
+.conflict-vs {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: #ef4444;
+  padding: 1px 0;
+}
+
+.empty-tip {
+  text-align: center;
+  padding: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* 底部：系统建议 */
+.consistency-suggestion {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-xl);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.suggestion-label {
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: rgba(255, 255, 255, 0.7);
+  flex-shrink: 0;
+}
+
+.suggestion-divider {
+  width: 1px;
+  height: 16px;
+  background: currentColor;
+  opacity: 0.3;
+  flex-shrink: 0;
+}
+
+.suggestion-text {
+  flex: 1;
+}
+
+.suggest-ok {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #15803d;
+}
+
+.suggest-warn {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #b45309;
+}
+
+.suggest-danger {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #b91c1c;
+}
+
+@media (max-width: 768px) {
+  .consistency-score-area { flex-direction: column; }
+  .consistency-columns { grid-template-columns: 1fr; }
 }
 </style>

@@ -667,7 +667,7 @@ function submitManualReview() {
     logMessage(LOG_LEVELS.ERROR, 'manual-review', 'SUBMIT', '提交失败', validation.errors)
     return { success: false, errors: validation.errors }
   }
-  
+
   state.manualReview.submitted = true
   state.manualReview.reviewedAt = new Date().toLocaleString()
   state.step = 'archived'
@@ -691,7 +691,7 @@ function submitManualReview() {
       manualReview: JSON.parse(JSON.stringify(state.manualReview))
     }
   }
-  
+
   state.archivedCases.unshift(archivedCase)
   logMessage(LOG_LEVELS.INFO, 'manual-review', 'SUBMIT', '人工复核提交完成，案件已归档', archivedCase)
   return { success: true, route: '/history-cases' }
@@ -705,6 +705,35 @@ function resetFlow() {
   })
   state.archivedCases = archivedCases
   logMessage(LOG_LEVELS.INFO, 'SYSTEM', 'RESET', '流程已重置')
+}
+
+// 清除无效的案件ID
+function clearInvalidCase() {
+  state.caseId = initialState().caseId
+  state.step = 'overview'
+  // 清除 localStorage 和 sessionStorage 中的 caseId 相关缓存
+  try {
+    const keysToRemove = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && (key.includes('caseId') || key.includes('case_id') || key === 'currentCase')) {
+        keysToRemove.push(key)
+      }
+    }
+    keysToRemove.forEach(key => localStorage.removeItem(key))
+
+    const sessionKeysToRemove = []
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i)
+      if (key && (key.includes('caseId') || key.includes('case_id') || key === 'currentCase')) {
+        sessionKeysToRemove.push(key)
+      }
+    }
+    sessionKeysToRemove.forEach(key => sessionStorage.removeItem(key))
+  } catch (e) {
+    // 忽略存储清除错误
+  }
+  logMessage(LOG_LEVELS.WARNING, 'SYSTEM', 'CLEAR_INVALID_CASE', '已清除无效案件ID及相关缓存')
 }
 
 function goStep(step) {
@@ -895,7 +924,7 @@ function deleteArchivedCase(caseId) {
 // 获取待处理任务（只显示归档案例中待分析状态）
 function getPendingTasks() {
   const tasks = []
-  
+
   // 归档案件中需要处理的 - 只显示待分析状态
   state.archivedCases.forEach(caseItem => {
     if (caseItem.status === '待分析') {
@@ -911,7 +940,7 @@ function getPendingTasks() {
       })
     }
   })
-  
+
   state.tasks.pending = tasks
   return tasks
 }
@@ -943,7 +972,7 @@ function completeTask(taskId) {
 // 获取最近事故记录
 function getRecentCases(limit = 5) {
   const cases = []
-  
+
   // 当前案件
   if (state.step !== 'overview' && state.step !== 'archived') {
     let caseStatus = '处理中'
@@ -971,7 +1000,7 @@ function getRecentCases(limit = 5) {
       hasVideo: !!state.form.videoFile
     })
   }
-  
+
   // 归档案件
   state.archivedCases.forEach(caseItem => {
     cases.push({
@@ -984,7 +1013,7 @@ function getRecentCases(limit = 5) {
       hasVideo: caseItem.hasVideo || false
     })
   })
-  
+
   // 按时间倒序，取最近的
   return cases.sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, limit)
 }
@@ -1021,6 +1050,7 @@ export function useAccidentFlow() {
     completeRuleBasis,
     submitManualReview,
     resetFlow,
+    clearInvalidCase,
     goStep,
     getLogs,
     exportData,

@@ -352,9 +352,14 @@ async function fetchReviews() {
     const result = await CasesAPI.getReviews(caseId)
     if (result.success && Array.isArray(result.data)) {
       reviews.value = result.data
+    } else {
+      // 案件不存在
+      notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (err) {
     console.warn('获取复核记录失败:', err)
+    notify({ title: '加载失败', message: '无法加载案件数据，请重试', type: 'error' })
   }
 }
 

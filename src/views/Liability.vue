@@ -227,9 +227,14 @@ async function loadCaseLiability() {
         state.analysis.confidence = liability.details?.confidence || state.analysis.confidence
         state.analysis.reasoningText = liability.summary || ''
       }
+    } else {
+      // 案件不存在
+      notify({ title: '案件不存在', message: `案件 ${state.caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (e) {
     console.warn('加载责任结果失败:', e)
+    notify({ title: '加载失败', message: '无法加载案件数据，请重试', type: 'error' })
   }
 }
 

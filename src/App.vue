@@ -133,6 +133,31 @@ onMounted(() => {
   window.addEventListener('app-toast', toastHandler)
   syncLoginState()
 
+  // 检查并清除无效的 caseId 缓存
+  try {
+    const invalidCaseKeys = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && (key.includes('caseId') || key.includes('case_id') || key === 'currentCase')) {
+        const value = localStorage.getItem(key)
+        // 检查是否是无效的 caseId（如 ACC-019871, ACC-264816 等）
+        if (value && /^ACC-\d+$/.test(value)) {
+          invalidCaseKeys.push(key)
+        }
+      }
+    }
+    if (invalidCaseKeys.length > 0) {
+      invalidCaseKeys.forEach(key => localStorage.removeItem(key))
+      showToast({
+        title: '数据已清理',
+        message: '检测到无效的案件ID，已自动清除',
+        type: 'info'
+      })
+    }
+  } catch (e) {
+    // 忽略存储检查错误
+  }
+
   // 未登录且不在登录页 → 重定向到登录页
   if (!isLoggedIn.value && route.path !== '/login') {
     router.push('/login')

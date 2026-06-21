@@ -116,58 +116,187 @@
       </div>
     </div>
     <div v-if="selectedCase && !showEditModal" class="modal-mask" @click.self="selectedCase=null">
-      <div class="modal-card">
+      <div class="modal-card detail-modal">
         <div class="modal-header">
           <h3 class="modal-title">
             <span class="modal-icon" v-html="icons.folder"></span>
-            {{ selectedCase.caseId }}
+            案件详情 - {{ selectedCase.caseId }}
           </h3>
           <button class="modal-close" @click="selectedCase=null" title="关闭">
             <span v-html="icons.close"></span>
           </button>
         </div>
-        <div class="modal-body">
-          <div class="info-row">
-            <span class="info-label">事故类型</span>
-            <span class="info-value">{{ selectedCase.title }}</span>
+        <div class="modal-body detail-body">
+
+          <!-- 加载中 -->
+          <div v-if="detailLoading" class="detail-loading">
+            <div class="loading-spinner"></div>
+            <p>正在加载案件详情...</p>
           </div>
-          <div class="info-row">
-            <span class="info-label">地点</span>
-            <span class="info-value">{{ selectedCase.location || '未记录' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">状态</span>
-            <span class="info-value">
-              <span class="status-badge" :class="getStatusClass(selectedCase.status)">
-                <span class="status-dot"></span>
-                {{ selectedCase.status }}
-              </span>
-            </span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">归档时间</span>
-            <span class="info-value">{{ selectedCase.archivedAt }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">处理流程</span>
-            <span class="info-value">{{ selectedCase.route || '未记录' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">证据来源</span>
-            <span class="info-value">{{ selectedCase.source || '未记录' }}</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">优先级</span>
-            <span class="info-value">{{ selectedCase.priority || '中' }}</span>
-          </div>
-          <div class="info-row full">
-            <span class="info-label">备注</span>
-            <span class="info-value">{{ selectedCase.note || '无备注' }}</span>
-          </div>
-          <div class="info-row full">
-            <span class="info-label">结论</span>
-            <span class="info-value">{{ selectedCase.conclusion }}</span>
-          </div>
+
+          <template v-else>
+            <!-- 1. 案件基本信息 -->
+            <div class="detail-section">
+              <h4 class="section-title">案件基本信息</h4>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">案件编号</span>
+                  <span class="info-value">{{ selectedCase.caseId }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">事故类型</span>
+                  <span class="info-value">{{ selectedCase.title || selectedCase.accident_type || '未命名' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">发生时间</span>
+                  <span class="info-value">{{ caseDetail?.snapshot?.form_data?.time || selectedCase.archivedAt || '未记录' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">发生地点</span>
+                  <span class="info-value">{{ selectedCase.location || '未记录' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">处理状态</span>
+                  <span class="info-value">
+                    <span class="status-badge" :class="getStatusClass(selectedCase.status)">
+                      <span class="status-dot"></span>
+                      {{ selectedCase.status }}
+                    </span>
+                  </span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">优先级</span>
+                  <span class="info-value">{{ selectedCase.priority || '中' }}</span>
+                </div>
+              </div>
+              <!-- 车辆信息 -->
+              <div v-if="caseVehicles.length" class="vehicle-list">
+                <div v-for="(v, i) in caseVehicles" :key="i" class="vehicle-tag">
+                  <span class="vehicle-type">{{ v.vehicleType || v.role || `车辆${i+1}` }}</span>
+                  <span class="vehicle-plate" v-if="v.plate">{{ v.plate }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. 证据列表 -->
+            <div class="detail-section">
+              <h4 class="section-title">证据列表</h4>
+              <div v-if="evidenceList.length" class="evidence-grid">
+                <div v-for="(ev, i) in evidenceList" :key="i" class="evidence-item">
+                  <div class="evidence-thumb" :class="`evidence-type-${ev.evidence_type || ev.type || 'file'}`">
+                    <span class="evidence-type-label">{{ ev.evidence_type || ev.type || '文件' }}</span>
+                  </div>
+                  <div class="evidence-info">
+                    <div class="evidence-name">{{ ev.file_name || ev.name || `证据${i+1}` }}</div>
+                    <div class="evidence-meta">{{ ev.source || '未标注来源' }}</div>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="empty-inline">暂无证据数据</p>
+            </div>
+
+            <!-- 3. 分析任务状态 -->
+            <div class="detail-section">
+              <h4 class="section-title">分析任务状态</h4>
+              <div class="task-status-row">
+                <div class="task-step" :class="{ active: !!caseDetail, done: !!caseDetail?.snapshot?.analysis }">
+                  <span class="step-dot"></span>
+                  <span class="step-label">案件录入</span>
+                </div>
+                <div class="task-line"></div>
+                <div class="task-step" :class="{ active: !!caseDetail?.snapshot?.analysis, done: !!caseDetail?.liability }">
+                  <span class="step-dot"></span>
+                  <span class="step-label">智能分析</span>
+                </div>
+                <div class="task-line"></div>
+                <div class="task-step" :class="{ active: !!caseDetail?.liability, done: reviews.length > 0 }">
+                  <span class="step-dot"></span>
+                  <span class="step-label">责任认定</span>
+                </div>
+                <div class="task-line"></div>
+                <div class="task-step" :class="{ active: reviews.length > 0 }">
+                  <span class="step-dot"></span>
+                  <span class="step-label">人工复核</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. 结构化事实 -->
+            <div class="detail-section">
+              <h4 class="section-title">结构化事实</h4>
+              <div v-if="structuredFacts.length" class="facts-table">
+                <div class="facts-head">
+                  <span>事实类型</span>
+                  <span>事实值</span>
+                  <span>来源</span>
+                </div>
+                <div v-for="(f, i) in structuredFacts" :key="i" class="facts-row">
+                  <span class="fact-type-tag">{{ f.fact_type }}</span>
+                  <span class="fact-val">{{ f.fact_value }}</span>
+                  <span class="fact-src">{{ f.source_type }}</span>
+                </div>
+              </div>
+              <p v-else class="empty-inline">暂无结构化事实</p>
+            </div>
+
+            <!-- 5. 命中规则 -->
+            <div class="detail-section">
+              <h4 class="section-title">命中规则</h4>
+              <div v-if="matchedRules.length" class="rules-list">
+                <div v-for="(r, i) in matchedRules" :key="i" class="rule-card">
+                  <div class="rule-card-name">{{ r.name || r.rule_name || `规则${i+1}` }}</div>
+                  <div class="rule-card-desc">{{ r.description || r.content || r.basis || '无依据说明' }}</div>
+                </div>
+              </div>
+              <p v-else class="empty-inline">暂无命中规则</p>
+            </div>
+
+            <!-- 6. 责任建议 -->
+            <div class="detail-section">
+              <h4 class="section-title">责任建议</h4>
+              <div v-if="liabilityVehicles.length" class="liability-result">
+                <div v-for="(v, i) in liabilityVehicles" :key="i" class="liability-row">
+                  <div class="liability-role-info">
+                    <span class="liability-role-text">{{ v.role || v.vehicleType || `车辆${i+1}` }}</span>
+                    <span class="liability-plate-text" v-if="v.plate">{{ v.plate }}</span>
+                  </div>
+                  <div class="liability-bar-track">
+                    <div class="liability-bar-fill" :style="{ width: (v.percentage || 0) + '%' }"></div>
+                  </div>
+                  <div class="liability-degree-info">
+                    <span class="liability-degree-text">{{ v.liability || '未认定' }}</span>
+                    <span class="liability-pct-text">{{ v.percentage || 0 }}%</span>
+                  </div>
+                </div>
+                <div v-if="liabilitySummary" class="liability-reason">
+                  <span class="reason-label">认定理由：</span>
+                  <span class="reason-text">{{ liabilitySummary }}</span>
+                </div>
+              </div>
+              <p v-else class="empty-inline">暂无责任建议</p>
+            </div>
+
+            <!-- 7. 人工复核记录 -->
+            <div class="detail-section">
+              <h4 class="section-title">人工复核记录</h4>
+              <div v-if="reviews.length" class="reviews-list">
+                <div v-for="(rv, i) in reviews" :key="i" class="review-item">
+                  <div class="review-head">
+                    <span class="review-reviewer">{{ rv.reviewer || rv.reviewer_name || '未知' }}</span>
+                    <span class="review-time">{{ rv.reviewed_at || rv.created_at || '--' }}</span>
+                  </div>
+                  <div class="review-conclusion">
+                    <span class="review-conclusion-tag" :class="rv.conclusion?.includes('确认') ? 'tag-confirm' : 'tag-adjust'">
+                      {{ rv.conclusion || rv.final_conclusion || '未填写结论' }}
+                    </span>
+                  </div>
+                  <div class="review-opinion" v-if="rv.opinion || rv.review_opinion">{{ rv.opinion || rv.review_opinion }}</div>
+                </div>
+              </div>
+              <p v-else class="empty-inline">暂无复核记录</p>
+            </div>
+          </template>
+
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="selectedCase=null">
@@ -318,6 +447,25 @@ const editingCase = ref(null)
 const allCases = ref([])  // 从API获取的案件列表
 const loading = ref(false)
 
+// 案件详情相关
+const detailLoading = ref(false)
+const caseDetail = ref(null)
+const evidenceList = ref([])
+const structuredFacts = ref([])
+const matchedRules = ref([])
+const reviews = ref([])
+const liabilityVehicles = ref([])
+const liabilitySummary = ref('')
+
+// 车辆信息（从 caseDetail 提取）
+const caseVehicles = computed(() => {
+  if (!caseDetail.value) return []
+  const snapshot = caseDetail.value.snapshot || {}
+  const formData = snapshot.form_data || {}
+  const vehicles = formData.vehicles || caseDetail.value.vehicle_info || []
+  return Array.isArray(vehicles) ? vehicles : []
+})
+
 const editForm = reactive({
   caseId: '',
   title: '',
@@ -427,9 +575,72 @@ const getStatusClass = (status) => {
   return map[status] || 'status-default'
 }
 
-const viewCase = (item) => {
+const viewCase = async (item) => {
   selectedCase.value = item
   showEditModal.value = false
+
+  // 重置详情数据
+  detailLoading.value = true
+  caseDetail.value = null
+  evidenceList.value = []
+  structuredFacts.value = []
+  matchedRules.value = []
+  reviews.value = []
+  liabilityVehicles.value = []
+  liabilitySummary.value = ''
+
+  const caseId = String(item.caseId)
+
+  // 并行加载所有详情数据
+  const [
+    detailRes, evidencesRes, factsRes, rulesRes, reviewsRes, liabilityRes
+  ] = await Promise.allSettled([
+    CasesAPI.getDetail(caseId),
+    CasesAPI.getEvidences(caseId),
+    CasesAPI.getFacts(caseId),
+    CasesAPI.getMatchedRules(caseId),
+    CasesAPI.getReviews(caseId),
+    CasesAPI.getLiabilityLatest(caseId),
+  ])
+
+  // 案件详情
+  if (detailRes.status === 'fulfilled' && detailRes.value?.success) {
+    caseDetail.value = detailRes.value.data
+  }
+
+  // 证据列表
+  if (evidencesRes.status === 'fulfilled' && evidencesRes.value?.success) {
+    evidenceList.value = evidencesRes.value.data || []
+  }
+
+  // 结构化事实
+  if (factsRes.status === 'fulfilled' && factsRes.value?.success) {
+    structuredFacts.value = factsRes.value.data || []
+  }
+
+  // 命中规则
+  if (rulesRes.status === 'fulfilled' && rulesRes.value?.success) {
+    matchedRules.value = rulesRes.value.data || []
+  }
+
+  // 复核记录
+  if (reviewsRes.status === 'fulfilled' && reviewsRes.value?.success) {
+    reviews.value = reviewsRes.value.data || []
+  }
+
+  // 责任建议
+  if (liabilityRes.status === 'fulfilled' && liabilityRes.value?.success) {
+    const liab = liabilityRes.value.data || {}
+    liabilityVehicles.value = liab.details?.vehicles || liab.vehicles || []
+    liabilitySummary.value = liab.summary || liab.details?.summary || ''
+  } else if (caseDetail.value?.liability) {
+    // 从 caseDetail 中提取责任数据
+    const liab = caseDetail.value.liability
+    liabilityVehicles.value = liab.details?.vehicles || []
+    liabilitySummary.value = liab.summary || ''
+  }
+
+  detailLoading.value = false
 }
 
 const continueCase = (item) => {
@@ -1011,6 +1222,443 @@ onMounted(async () => {
   padding: var(--space-4) var(--space-6);
   border-top: 1px solid var(--border-light);
   justify-content: flex-end;
+}
+
+/* ===== 案件详情模态框 ===== */
+.detail-modal {
+  width: min(900px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-body {
+  padding: var(--space-5) var(--space-6);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.detail-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 60px 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-light);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.detail-section {
+  margin-bottom: var(--space-5);
+}
+
+.detail-section:last-child { margin-bottom: 0; }
+
+.section-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 2px solid var(--primary-soft);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.section-title::before {
+  content: '';
+  width: 4px;
+  height: 16px;
+  background: var(--primary-gradient);
+  border-radius: 2px;
+}
+
+/* 信息网格 */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.info-item .info-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.info-item .info-value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* 车辆信息 */
+.vehicle-list {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.vehicle-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: var(--primary-soft);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+}
+
+.vehicle-type { color: var(--primary); font-weight: 600; }
+.vehicle-plate {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: var(--bg-primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* 证据列表 */
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+
+.evidence-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.evidence-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--primary-soft);
+}
+
+.evidence-type-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.evidence-info { flex: 1; min-width: 0; }
+.evidence-name {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.evidence-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 任务状态流程 */
+.task-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.task-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 80px;
+}
+
+.step-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--border-light);
+  border: 2px solid var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--border-light);
+  transition: all var(--transition-fast);
+}
+
+.task-step.active .step-dot {
+  background: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.task-step.done .step-dot {
+  background: var(--success-500);
+  box-shadow: 0 0 0 1px var(--success-500);
+}
+
+.step-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.task-step.active .step-label,
+.task-step.done .step-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.task-line {
+  flex: 1;
+  height: 2px;
+  background: var(--border-light);
+  border-radius: 1px;
+  min-width: 20px;
+}
+
+/* 结构化事实表格 */
+.facts-table {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.facts-head, .facts-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 100px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  align-items: center;
+}
+
+.facts-head {
+  background: var(--bg-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.facts-row {
+  border-top: 1px solid var(--border-light);
+  font-size: var(--text-xs);
+}
+
+.fact-type-tag {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.fact-val {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.fact-src {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* 命中规则 */
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rule-card {
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--primary);
+}
+
+.rule-card-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.rule-card-desc {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* 责任建议 */
+.liability-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.liability-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 120px;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.liability-role-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.liability-role-text {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.liability-plate-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.liability-bar-track {
+  height: 10px;
+  background: var(--bg-secondary);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.liability-bar-fill {
+  height: 100%;
+  background: var(--primary-gradient);
+  border-radius: 5px;
+  transition: width 0.3s;
+}
+
+.liability-degree-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.liability-degree-text {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.liability-pct-text {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.liability-reason {
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.reason-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.reason-text {
+  color: var(--text-primary);
+}
+
+/* 复核记录 */
+.reviews-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.review-item {
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.review-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.review-reviewer {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.review-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.review-conclusion { margin-bottom: 4px; }
+
+.review-conclusion-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tag-confirm {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success-500);
+}
+
+.tag-adjust {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warning-500);
+}
+
+.review-opinion {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* 空状态 */
+.empty-inline {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  padding: var(--space-2) 0;
 }
 
 @media (max-width: 768px) {

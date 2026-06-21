@@ -175,6 +175,9 @@ class Evidence(Base):
     case_id = Column(String(255), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
     evidence_type = Column(String(50), nullable=False, default="image")
     file_path = Column(String(500), nullable=False, default="")
+    file_name = Column(String(255), nullable=False, default="")
+    file_size = Column(Integer, nullable=False, default=0)
+    file_hash = Column(String(128), nullable=False, default="")
     upload_time = Column(String(30), nullable=False, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     analysis_status = Column(String(50), nullable=False, default="pending")
     related_stage = Column(String(100), nullable=False, default="")
@@ -277,10 +280,11 @@ def get_db_conn():
     if DATABASE_URL.startswith("sqlite"):
         import sqlite3
         db_path = DATABASE_URL.replace("sqlite:///", "")
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
     else:
         # For MySQL, use raw connection from engine
@@ -328,6 +332,85 @@ def init_db():
             for rid, rname, rtype, rscene, rcontent in default_rules:
                 db.add(Rule(id=rid, name=rname, type=rtype, scene=rscene, content=rcontent))
             db.commit()
+
+        # 预置演示案例（双车并行变道碰撞事故）- 全链路数据
+        demo_case_id = "ACC-DEMO-2025-0001"
+        existing_demo = db.query(Case).filter(Case.id == demo_case_id).first()
+        if not existing_demo:
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            demo_case = Case(
+                id=demo_case_id,
+                title="双车并行变道碰撞事故（演示案例）",
+                accident_type="变道事故",
+                location="G15沈海高速K120+500",
+                status="已完成",
+                description="两辆小轿车在高速并行行驶过程中，左侧车辆在未打转向灯的情况下突然向右变道，与右侧正常行驶车辆发生碰撞。",
+                weather="晴",
+                road_env="高速公路，双向四车道",
+                vehicle_info=json.dumps([
+                    {"name": "车辆A（变道车）", "type": "小轿车", "color": "白色", "plate": "沪A·12345"},
+                    {"name": "车辆B（被撞车）", "type": "小轿车", "color": "黑色", "plate": "沪B·67890"}
+                ], ensure_ascii=False),
+                priority="高",
+                submitted_at="2025-06-15 14:30:00",
+                updated_at=now_str,
+            )
+            db.add(demo_case)
+            db.flush()
+
+            # 1. evidence 记录
+            ev1 = Evidence(case_id=demo_case_id, evidence_type="video", file_path="uploads/cases/ACC-DEMO-2025-0001/videos/demo.mp4", file_name="demo.mp4", file_size=15728640, file_hash="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", upload_time=now_str, analysis_status="completed", related_stage="video-processing", extra_data="{}")
+            db.add(ev1); db.flush(); ev1_id = ev1.evidence_id
+
+            ev2 = Evidence(case_id=demo_case_id, evidence_type="image", file_path="uploads/cases/ACC-DEMO-2025-0001/images/scene_1.jpg", file_name="scene_1.jpg", file_size=524288, file_hash="b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7", upload_time=now_str, analysis_status="completed", related_stage="image-analysis", extra_data="{}")
+            db.add(ev2); db.flush(); ev2_id = ev2.evidence_id
+
+            # 2. analysis_task 记录
+            db.add(AnalysisTask(task_id="AT-DEMO-00000001", case_id=demo_case_id, task_type="full_analysis", task_status="success", progress=100, result_json=json.dumps({"status":"completed","summary":"分析完成","ratio":"7:3","hit_rules_count":2}), error_message="", created_at=now_str, updated_at=now_str))
+
+            # 3. structured_fact 记录（3条）
+            db.add(StructuredFact(case_id=demo_case_id, source_type="video_analysis", fact_type="accident_type", fact_value="变道事故", confidence=0.92, evidence_id=ev1_id, keyframe_time=3.5))
+            db.add(StructuredFact(case_id=demo_case_id, source_type="video_analysis", fact_type="vehicle_count", fact_value="2", confidence=0.95, evidence_id=ev1_id, keyframe_time=3.5))
+            db.add(StructuredFact(case_id=demo_case_id, source_type="image_analysis", fact_type="lane_change_detected", fact_value="true", confidence=0.88, evidence_id=ev2_id, keyframe_time=None))
+
+            # 4. matched_rule 记录（2条）
+            db.add(MatchedRule(case_id=demo_case_id, rule_id="R-002", rule_name="变道未打转向灯", trigger_condition="变道未打灯", trigger_reason="视频分析显示变道前未打转向灯", legal_basis="变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"))
+            db.add(MatchedRule(case_id=demo_case_id, rule_id="R-007", rule_name="违法变更车道", trigger_condition="连续变道", trigger_reason="视频分析显示车辆连续变更两条车道", legal_basis="连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"))
+
+            # 5. liability_result 记录
+            db.add(LiabilityResult(case_id=demo_case_id, summary="双车并行变道碰撞事故分析结果：变道车辆（车辆A）在未打转向灯的情况下连续变更两条车道，负主要责任。", ratio="7:3", details=json.dumps({"analysis":"视频分析显示变道车辆未打转向灯且连续变道，负主要责任","vehicle_a":"变道车辆，未打转向灯，连续变道，负70%责任","vehicle_b":"正常行驶，未及时发现变道车辆，负30%责任"}), hit_rules=json.dumps([{"code":"R-002","name":"变道未打转向灯"},{"code":"R-007","name":"违法变更车道"}])))
+
+            # 6. analysis_version 记录（版本号=1）
+            db.add(AnalysisVersion(case_id=demo_case_id, version_no=1, facts_json=json.dumps({"accident_type":"变道事故","vehicle_count":2,"impact_detected":True}), matched_rules_json=json.dumps([{"code":"R-002","name":"变道未打转向灯"},{"code":"R-007","name":"违法变更车道"}]), suggestion_json=json.dumps({"ratio":"7:3","summary":"变道车辆负主要责任"}), model_version="v1.0"))
+
+            # 7. review 记录
+            db.add(Review(case_id=demo_case_id, reviewer="系统管理员", system_suggestion="建议变道车辆（车辆A）负主要责任（70%），被撞车辆（车辆B）负次要责任（30%）", final_result="同意系统建议", review_comment="视频证据清晰，变道车辆未打转向灯且连续变道，事实清楚，责任划分合理。", review_time=now_str))
+
+            # 8. operation_log 记录
+            db.add(OperationLog(case_id=demo_case_id, user_id=1, action_type="case_archived", target_type="case", target_id=demo_case_id, before_data=None, after_data=json.dumps({"status":"已完成"})))
+
+            db.commit()
+            print(f"[DB] Created demo case with full data: {demo_case_id}")
+
+            # 创建文件目录结构
+            try:
+                from pathlib import Path
+                base_dir = Path(__file__).parent.parent.absolute()
+                demo_upload_dir = base_dir / "uploads" / "cases" / demo_case_id
+                for subdir in ["videos", "images", "keyframes", "reports"]:
+                    (demo_upload_dir / subdir).mkdir(parents=True, exist_ok=True)
+                print(f"[DB] Created demo case directories: {demo_upload_dir}")
+            except Exception as dir_err:
+                print(f"[WARN] Failed to create demo directories: {dir_err}")
+        else:
+            try:
+                from pathlib import Path
+                base_dir = Path(__file__).parent.parent.absolute()
+                demo_upload_dir = base_dir / "uploads" / "cases" / demo_case_id
+                for subdir in ["videos", "images", "keyframes", "reports"]:
+                    (demo_upload_dir / subdir).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
 
         print(f"[DB] Database initialized ({DATABASE_URL})")
     finally:
@@ -892,9 +975,12 @@ def create_evidence_record(case_id: str, evidence_data: Dict[str, Any]) -> Dict[
             case_id=case_id,
             evidence_type=evidence_data.get("evidence_type", "image"),
             file_path=evidence_data.get("file_path", ""),
+            file_name=evidence_data.get("file_name", ""),
+            file_size=evidence_data.get("file_size", 0),
+            file_hash=evidence_data.get("file_hash", ""),
             analysis_status=evidence_data.get("analysis_status", "pending"),
             related_stage=evidence_data.get("related_stage", ""),
-            metadata=json.dumps(evidence_data.get("metadata", {}), ensure_ascii=False),
+            extra_data=json.dumps(evidence_data.get("metadata", {}), ensure_ascii=False),
         )
         db.add(ev)
         db.commit()
@@ -1164,21 +1250,158 @@ def get_case_structured_facts(case_id: str) -> List[Dict[str, Any]]:
 
 
 # ================================================================
-# Task 9: Evidence Consistency Check
+# Task 8b: 自动提取结构化事实（来自队友的版本）
+# ================================================================
+
+def auto_extract_structured_facts(case_id: str) -> int:
+    """
+    从案件已有数据中自动提取结构化事实，写入 StructuredFact 表。
+    两个来源：form_entry（表单录入） & ai_analysis（AI 分析结果）。
+    返回新写入的事实数量。
+    """
+    # 1) 先查该案件是否已有事实，有则跳过（避免重复写入）
+    existing = get_case_structured_facts(case_id)
+    if existing and len(existing) > 0:
+        return 0
+
+    # 2) 读取案件完整信息（包含 snapshot / liability）
+    case = get_case(case_id)
+    if not case:
+        return 0
+
+    db = SessionLocal()
+    created = 0
+    try:
+        def _add(source_type: str, fact_type: str, fact_value: str, confidence: float = 0.85):
+            nonlocal created
+            if not fact_value:
+                return
+            f = StructuredFact(
+                case_id=case_id,
+                source_type=source_type,
+                fact_type=fact_type,
+                fact_value=str(fact_value).strip(),
+                confidence=float(confidence),
+            )
+            db.add(f)
+            created += 1
+
+        # --- 来源 A：表单录入 form_entry ---
+        _add("form_entry", "事故类型", case.get("accident_type") or case.get("title", ""), 0.9)
+        _add("form_entry", "事发地点", case.get("location", ""), 0.9)
+        _add("form_entry", "天气", case.get("weather", ""), 0.8)
+        _add("form_entry", "道路环境", case.get("road_env", ""), 0.8)
+        vehicle_info = case.get("vehicle_info") or []
+        if isinstance(vehicle_info, str):
+            try:
+                vehicle_info = json.loads(vehicle_info)
+            except Exception:
+                vehicle_info = []
+        if vehicle_info:
+            _add("form_entry", "车辆数", str(len(vehicle_info)), 0.9)
+        for idx, v in enumerate(vehicle_info):
+            if not isinstance(v, dict):
+                continue
+            tag = f"车辆{idx + 1}"
+            vtype = v.get("vehicle_type") or v.get("vehicleType") or v.get("type") or ""
+            plate = v.get("plate") or v.get("license") or ""
+            role = v.get("role") or ""
+            if vtype:
+                _add("form_entry", f"{tag}类型", str(vtype), 0.85)
+            if plate:
+                _add("form_entry", f"{tag}车牌", str(plate), 0.9)
+            if role:
+                _add("form_entry", f"{tag}角色", str(role), 0.75)
+
+        # --- 来源 B：snapshot / liability 中的 AI 分析结果 ai_analysis ---
+        snapshot = case.get("snapshot") or {}
+        snap_form = snapshot.get("form_data") or {} if isinstance(snapshot.get("form_data"), dict) else {}
+        snap_analysis = snapshot.get("analysis") or {} if isinstance(snapshot.get("analysis"), dict) else {}
+        liability = case.get("liability") or {}
+        liab_details = liability.get("details") if isinstance(liability.get("details"), dict) else {}
+
+        snap_at = (
+            snap_analysis.get("accidentType") or snap_analysis.get("accident_type")
+            or snap_form.get("accident_type") or snap_form.get("accidentType")
+            or liab_details.get("accident_type") or case.get("accident_type") or case.get("title")
+        )
+        if snap_at:
+            _add("ai_analysis", "事故类型", str(snap_at), 0.7)
+
+        snap_loc = snap_analysis.get("location") or snap_form.get("location") or case.get("location")
+        if snap_loc:
+            _add("ai_analysis", "事发地点", str(snap_loc), 0.75)
+
+        snap_weather = snap_form.get("weather") or snap_analysis.get("weather") or case.get("weather")
+        if snap_weather:
+            _add("ai_analysis", "天气", str(snap_weather), 0.65)
+
+        snap_road = snap_form.get("road_env") or snap_form.get("roadEnv") or snap_analysis.get("roadEnv") or case.get("road_env")
+        if snap_road:
+            _add("ai_analysis", "道路环境", str(snap_road), 0.7)
+
+        ai_conf = snap_analysis.get("confidence") or liab_details.get("confidence")
+        if ai_conf is not None and str(ai_conf).strip():
+            _add("ai_analysis", "分析置信度", str(ai_conf), 0.6)
+
+        ai_vehicle_count = snap_analysis.get("vehicle_count") or snap_analysis.get("vehicleCount")
+        if ai_vehicle_count is not None and str(ai_vehicle_count).strip():
+            _add("ai_analysis", "车辆数", str(ai_vehicle_count), 0.65)
+        elif vehicle_info:
+            _add("ai_analysis", "车辆数", str(len(vehicle_info)), 0.6)
+
+        liab_vehicles = liab_details.get("vehicles") or []
+        if isinstance(liab_vehicles, list) and liab_vehicles:
+            for idx, lv in enumerate(liab_vehicles):
+                if not isinstance(lv, dict):
+                    continue
+                tag = f"车辆{idx + 1}"
+                ratio = lv.get("liability_ratio") or lv.get("ratio") or lv.get("percent") or ""
+                role = lv.get("role") or lv.get("role_type") or ""
+                vtype = lv.get("vehicle_type") or lv.get("vehicleType") or ""
+                plate = lv.get("plate") or ""
+                if ratio:
+                    _add("ai_analysis", f"{tag}责任占比", str(ratio), 0.7)
+                if role:
+                    _add("ai_analysis", f"{tag}责任角色", str(role), 0.65)
+                if vtype:
+                    _add("ai_analysis", f"{tag}类型", str(vtype), 0.7)
+                if plate:
+                    _add("ai_analysis", f"{tag}车牌", str(plate), 0.75)
+
+        if case.get("submitted_at"):
+            _add("form_entry", "提交时间", str(case.get("submitted_at")), 0.95)
+
+        db.commit()
+        return created
+    finally:
+        db.close()
+
+
+# ================================================================
+# Task 9: Evidence Consistency Check（来自队友的增强版本）
 # ================================================================
 
 def get_evidence_consistency_check(case_id: str) -> Dict[str, Any]:
-    """证据一致性检测"""
+    """证据一致性检测（增强版：自动提取事实 + 更丰富的输出）"""
+    # 自动从案件已有数据提取结构化事实（若尚未写入）
+    auto_extract_structured_facts(case_id)
+
     db = get_db()
     try:
         facts = db.query(StructuredFact).filter(
             StructuredFact.case_id == case_id
         ).all()
         if not facts:
-            return {"consistent": True, "score": 1.0, "conflicts": []}
+            return {
+                "consistent": False, "score": 0, "conflicts": [],
+                "consistent_items": [],
+                "conflict_items": [],
+                "suggestion": "该案件尚未录入有效数据，无法进行一致性检测"
+            }
 
         # 按 fact_type 分组比较不同 source_type 的值
-        fact_groups = {}  # fact_type -> {source_type: [facts]}
+        fact_groups = {}
         for f in facts:
             key = f.fact_type
             if key not in fact_groups:
@@ -1189,6 +1412,7 @@ def get_evidence_consistency_check(case_id: str) -> Dict[str, Any]:
             fact_groups[key][src].append(f)
 
         conflicts = []
+        consistent_items = []
         total_checks = 0
         consistent_checks = 0
 
@@ -1205,6 +1429,13 @@ def get_evidence_consistency_check(case_id: str) -> Dict[str, Any]:
                             total_checks += 1
                             if f1.fact_value.strip().lower() == f2.fact_value.strip().lower():
                                 consistent_checks += 1
+                                consistent_items.append({
+                                    "fact_type": fact_type,
+                                    "source_a": src1,
+                                    "value_a": f1.fact_value,
+                                    "source_b": src2,
+                                    "value_b": f2.fact_value,
+                                })
                             else:
                                 conflicts.append({
                                     "fact_type": fact_type,
@@ -1216,11 +1447,28 @@ def get_evidence_consistency_check(case_id: str) -> Dict[str, Any]:
                                     "confidence_b": f2.confidence,
                                 })
 
-        score = consistent_checks / total_checks if total_checks > 0 else 1.0
+        score = consistent_checks / total_checks if total_checks > 0 else 0.0
+        score_percent = round(score * 100)
+
+        if total_checks == 0:
+            suggestion = f"已提取 {len(facts)} 条结构化事实，但来源单一（只有表单录入或只有 AI 分析），尚无跨源差异可比对"
+            score_percent = 0
+        elif score_percent >= 80:
+            suggestion = "证据一致性高，可进入责任认定环节"
+        elif score_percent >= 60:
+            suggestion = "证据存在部分冲突，建议进入人工复核"
+        else:
+            suggestion = "证据冲突较多，强烈建议人工复核并补充证据"
+
         return {
-            "consistent": score >= 0.6,
-            "score": round(score, 2),
-            "conflicts": conflicts[:20],  # 最多返回20条冲突
+            "consistent": score_percent >= 60,
+            "score": score_percent,
+            "total_checks": total_checks,
+            "total_facts": len(facts),
+            "conflicts": conflicts[:20],
+            "consistent_items": consistent_items[:20],
+            "conflict_items": conflicts[:20],
+            "suggestion": suggestion,
         }
     finally:
         db.close()

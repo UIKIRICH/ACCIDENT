@@ -324,10 +324,15 @@ async function fetchMatchedRules() {
         }))
         updateRuleBasis({ selectedRules: storeRules, appliedRules: storeRules })
       }
+    } else {
+      // 案件不存在
+      notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (err) {
     console.warn('获取命中规则失败:', err)
     loadError.value = err.message || '获取命中规则失败'
+    notify({ title: '加载失败', message: '无法加载案件数据，请重试', type: 'error' })
   } finally {
     loadingRules.value = false
   }

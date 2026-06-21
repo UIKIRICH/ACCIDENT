@@ -116,6 +116,7 @@
                   <option>左转车</option>
                   <option>直行车</option>
                   <option>右转车</option>
+                  <option>变道车辆</option>
                 </select>
               </div>
             </div>
@@ -802,16 +803,8 @@ const submitAnalysis = async () => {
     return
   }
   
-  // 确保所有必要字段都已更新
-  updateForm({
-    accidentType: form.value.accidentType,
-    weather: form.value.weather,
-    roadEnv: form.value.roadCondition
-  })
-
   submitting.value = true
   try {
-    // 调用 POST /api/cases 将案件数据发送到后端
     const result = await CasesAPI.create({
       title: form.value.accidentType || '事故案件',
       accident_type: form.value.accidentType,
@@ -876,10 +869,15 @@ onMounted(async () => {
         note: c.note || '',
       })
       notify({ title: '案件已加载', message: `案件 ${caseId} 信息已恢复`, type: 'success' })
+    } else {
+      // 案件不存在，跳转回历史案例
+      notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (err) {
     console.warn('加载案件失败:', err)
-    notify({ title: '加载失败', message: '无法从后端获取案件数据', type: 'warning' })
+    notify({ title: '加载失败', message: '无法从后端获取案件数据，请重试', type: 'warning' })
+    setTimeout(() => router.push('/history-cases'), 2000)
   }
 })
 </script>
