@@ -19,7 +19,7 @@ import urllib.request as urllib_request
 from sqlalchemy import text as sa_text
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from datetime import datetime as dt_datetime
+from datetime import datetime, timezone
 
 # 获取项目根目录（main.py所在目录）
 BASE_DIR = Path(__file__).parent.absolute()
@@ -53,27 +53,438 @@ security = HTTPBearer()
 
 def _as_int(value: Any, default: int) -> int:
     try:
-        return int(value)
-    except (ValueError, TypeError):
+        return int(str(value).strip())
+    except Exception:
         return default
 
 def _as_float(value: Any) -> Optional[float]:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except Exception:
         return default
+    
+def _round_float(value: Any, digits: int = 4) -> Optional[float]:
+    v = _as_float(value)
+    if v is None:
+        return None
+    return round(float(v), digits)
 
 def _round_float_or(value: Any, default: float = 0.0, digits: int = 4) -> float:
     fv = _as_float(value)
     if fv is None:
         return round(float(default), digits)
     return round(float(fv), digits)
+
+def _is_truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+def _stable_json_dumps(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+def _hash_obj_sha256(obj: Any) -> str:
+    data = _stable_json_dumps(obj).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+def _get_dify_hash_log_file() -> Path:
+    raw_path = os.getenv("DIFY_HASH_LOG_FILE", "").strip()
+    if raw_path:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = (BASE_DIR / path).resolve()
+    else:
+        path = BASE_DIR / "outputs" / "dify_hash_logs.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _append_dify_hash_log(entry: Dict[str, Any]) -> Optional[str]:
+    if not _is_truthy_env("DIFY_HASH_LOG_ENABLED", True):
+        return None
+    log_entry = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        **entry,
+    }
+    try:
+        log_path = _get_dify_hash_log_file()
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(_stable_json_dumps(log_entry))
+            f.write("\n")
+        return str(log_path)
+    except Exception:
+        return None
+
+def _read_last_jsonl(path: Path, limit: int) -> List[Dict[str, Any]]:
+    if not path.exists() or limit <= 0:
+        return []
+    buf: deque = deque(maxlen=limit)
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                buf.append(json.loads(line))
+            except Exception:
+                continue
+    return list(buf)[::-1]
+
+def _prepare_dify_request_payload(
+    inputs: Dict[str, Any],
+    user: str,
+    response_mode: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    settings = _get_dify_settings()
+    payload: Dict[str, Any] = {
+        "inputs": inputs or {},
+        "response_mode": response_mode or settings["default_response_mode"],
+        "user": user or "accident_app",
+    }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+    return payload
+
+def _probe_dify_endpoint(workflow_url: str, timeout_sec: int = 8) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "ok": False,
+        "status_code": None,
+        "content_type": "",
+        "looks_like_html": False,
+        "message": "",
+    }
+    workflow_url = str(workflow_url or "").strip()
+    if not workflow_url:
+        result["message"] = "workflow_url is empty"
+        return result
+    req = urllib_request.Request(
+        workflow_url,
+        method="GET",
+        headers={
+            "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+            "Connection": "close",
+        },
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=max(3, int(timeout_sec))) as resp:
+            status_code = int(getattr(resp, "status", 200))
+            content_type = str(resp.headers.get("Content-Type", ""))
+            head = (resp.read(256) or b"").decode("utf-8", errors="ignore").lower()
+        looks_like_html = ("text/html" in content_type.lower()) or ("<html" in head) or ("<!doctype html" in head)
+        result.update(
+            {
+                "status_code": status_code,
+                "content_type": content_type,
+                "looks_like_html": looks_like_html,
+                "ok": (not looks_like_html),
+                "message": "ok" if not looks_like_html else "endpoint returned HTML page, not Dify API JSON",
+            }
+        )
+        return result
+    except urllib_error.HTTPError as exc:
+        status_code = int(exc.code or 0)
+        raw = exc.read() or b""
+        content_type = str(exc.headers.get("Content-Type", "")) if exc.headers else ""
+        head = raw[:256].decode("utf-8", errors="ignore").lower()
+        looks_like_html = ("text/html" in content_type.lower()) or ("<html" in head) or ("<!doctype html" in head)
+        ok = (status_code in {400, 401, 403, 404, 405, 415, 422}) and (not looks_like_html)
+        result.update(
+            {
+                "status_code": status_code,
+                "content_type": content_type,
+                "looks_like_html": looks_like_html,
+                "ok": ok,
+                "message": "reachable_with_http_error" if ok else f"HTTPError {status_code}",
+            }
+        )
+        return result
+    except Exception as exc:
+        result["message"] = f"probe_failed: {exc}"
+        return result
+
+def _canonical_number_dict(raw: Any, digits: int = 4) -> Dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for k, v in raw.items():
+        fv = _round_float(v, digits=digits)
+        if fv is not None:
+            out[str(k)] = fv
+    return out
+
+
+def _canonical_type_topk(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "type": str(item.get("type") or ""),
+                "label": str(item.get("label") or ""),
+                "prob": _round_float_or(item.get("prob"), 0.0, digits=4),
+                "score": _round_float_or(item.get("score"), 0.0, digits=4),
+            }
+        )
+    return out
+
+
+def _canonical_keyframes(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "stage": str(item.get("stage") or ""),
+                "purpose": str(item.get("purpose") or ""),
+                "time": _round_float_or(item.get("time"), 0.0, digits=2),
+                "score": _round_float_or(item.get("score"), 0.0, digits=4),
+                "raw_score": _round_float_or(item.get("raw_score"), 0.0, digits=4),
+                "is_main": bool(item.get("is_main")),
+            }
+        )
+    # Strip volatile thumb_url and keep deterministic order.
+    return sorted(out, key=lambda x: (x["time"], x["stage"], x["purpose"]))
+
+
+def _canonical_dominant_cluster(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "dominance": _round_float_or(raw.get("dominance"), 0.0, digits=4),
+        "coverage": _round_float_or(raw.get("coverage"), 0.0, digits=4),
+        "continuity": _round_float_or(raw.get("continuity"), 0.0, digits=4),
+        "bridged_coverage": _round_float_or(raw.get("bridged_coverage"), 0.0, digits=4),
+        "bridged_continuity": _round_float_or(raw.get("bridged_continuity"), 0.0, digits=4),
+        "peak_mean": _round_float_or(raw.get("peak_mean"), 0.0, digits=4),
+        "impact_peak": _round_float_or(raw.get("impact_peak"), 0.0, digits=4),
+        "onset_peak": _round_float_or(raw.get("onset_peak"), 0.0, digits=4),
+        "count": _safe_int(raw.get("count"), 0),
+        # Explicitly omit pair_keys because IDs vary across runs for the same scene.
+    }
+
+
+def _canonical_video_evidence(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    stage_scores = raw.get("stage_scores") if isinstance(raw.get("stage_scores"), dict) else {}
+    return {
+        "peak_risk": _round_float_or(raw.get("peak_risk"), 0.0, digits=4),
+        "risk_threshold": _round_float_or(raw.get("risk_threshold"), 0.0, digits=4),
+        "stage_scores": _canonical_number_dict(stage_scores, digits=4),
+        "type_probs": _canonical_number_dict(raw.get("type_probs"), digits=4),
+        "type_scores_raw": _canonical_number_dict(raw.get("type_scores_raw"), digits=4),
+        # Skip long risk_curve / pair_metrics / track-linked fields to reduce noise.
+    }
+
+
+def _canonical_image_consistency(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        "consistency_label": str(raw.get("consistency_label") or ""),
+        "evidence_consistency_score": _round_float_or(raw.get("evidence_consistency_score"), 0.0, digits=4),
+        "image_rear_end_score": _round_float_or(raw.get("image_rear_end_score"), 0.0, digits=4),
+        "video_rear_end_score": _round_float_or(raw.get("video_rear_end_score"), 0.0, digits=4),
+    }
+
+
+def _canonical_image_quality(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    reject_reasons = raw.get("reject_reasons")
+    if isinstance(reject_reasons, list):
+        reasons = [str(x) for x in reject_reasons]
+    else:
+        reasons = []
+    return {
+        "quality_score": _round_float_or(raw.get("quality_score"), 0.0, digits=4),
+        "hard_reject": bool(raw.get("hard_reject")),
+        "reject_reasons": sorted(reasons),
+    }
+
+
+def _stabilize_video_result_for_dify(video_result: Dict[str, Any]) -> Dict[str, Any]:
+    vr = video_result or {}
+    timeline = vr.get("timeline") if isinstance(vr.get("timeline"), dict) else {}
+    return {
+        "model_version": str(vr.get("model_version") or ""),
+        "accident_type": str(vr.get("accident_type") or "unknown"),
+        "model_pred_type": str(vr.get("model_pred_type") or vr.get("accident_type") or "unknown"),
+        "decision_mode": str(vr.get("decision_mode") or "model_main"),
+        "fallback_reason": str(vr.get("fallback_reason") or "NONE"),
+        "rear_guard_applied": bool(vr.get("rear_guard_applied")),
+        "rear_guard_version": str(vr.get("rear_guard_version") or "v3.4.3"),
+        "rear_guard_cfg": _canonical_number_dict(vr.get("rear_guard_cfg"), digits=4),
+        "impact_time": _round_float_or(vr.get("impact_time", vr.get("estimated_collision_time", timeline.get("impact_time"))), 0.0, digits=2),
+        "onset_time": _round_float_or(vr.get("onset_time", timeline.get("onset_time")), 0.0, digits=2),
+        "post_time": _round_float_or(vr.get("post_time", timeline.get("post_time")), 0.0, digits=2),
+        "vehicle_count": _safe_int(vr.get("vehicle_count"), 0),
+        "type_confidence": _round_float_or(vr.get("type_confidence", vr.get("confidence")), 0.0, digits=4),
+        "type_topk": _canonical_type_topk(vr.get("type_topk")),
+        "scene_prior": _canonical_number_dict(vr.get("scene_prior"), digits=4),
+        "uncertainty": _round_float_or(vr.get("uncertainty"), 1.0, digits=4),
+        "risk_alert_time": _round_float_or(vr.get("risk_alert_time"), 0.0, digits=2),
+        "lead_time_sec": _round_float_or(vr.get("lead_time_sec"), 0.0, digits=2),
+        "risk_level": str(vr.get("risk_level") or "unknown"),
+        "dominant_cluster": _canonical_dominant_cluster(vr.get("dominant_cluster")),
+        "evidence": _canonical_video_evidence(vr.get("evidence")),
+        "keyframes": _canonical_keyframes(vr.get("keyframes")),
+        # Strip volatile video file path and dominant_pair IDs.
+    }
+
+
+def _stabilize_image_evidence_for_dify(image_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    ie = image_evidence or {}
+    vehicle_count = _safe_int(ie.get("vehicle_count"), -1)
+    if vehicle_count < 0:
+        vehicles = ie.get("vehicles")
+        vehicle_count = len(vehicles) if isinstance(vehicles, list) else 0
+
+    damage_count = _safe_int(ie.get("damage_count"), -1)
+    if damage_count < 0:
+        damages = ie.get("damages")
+        damage_count = len(damages) if isinstance(damages, list) else 0
+
+    return {
+        "task": str(ie.get("task") or ""),
+        "module": str(ie.get("module") or ""),
+        "module_positioning": str(ie.get("module_positioning") or ""),
+        "accident_type": str(ie.get("accident_type") or ""),
+        "sub_type": str(ie.get("sub_type") or ""),
+        "rear_end_supported": bool(ie.get("rear_end_supported")),
+        "rear_end_likelihood": _round_float_or(ie.get("rear_end_likelihood"), 0.0, digits=4),
+        "rear_end_type_match_score": _round_float_or(
+            ie.get("rear_end_type_match_score", ie.get("rear_end_likelihood")),
+            0.0,
+            digits=4,
+        ),
+        "single_image_liability_trust_score": _round_float_or(
+            ie.get("single_image_liability_trust_score", ie.get("confidence")),
+            0.0,
+            digits=4,
+        ),
+        "confidence": _round_float_or(ie.get("confidence"), 0.0, digits=4),
+        "liability": str(ie.get("liability") or ""),
+        "role_tendency": str(ie.get("role_tendency") or ""),
+        "decision_hint": str(ie.get("decision_hint") or ""),
+        "decision_text": str(ie.get("decision_text") or ""),
+        "reason": str(ie.get("reason") or ""),
+        "evidence_summary": str(ie.get("evidence_summary") or ""),
+        "evidence_consistency_score": _round_float_or(ie.get("evidence_consistency_score"), 0.0, digits=4),
+        "consistency": _canonical_image_consistency(ie.get("consistency")),
+        "quality": _canonical_image_quality(ie.get("quality")),
+        "feature_scores": _canonical_number_dict(ie.get("feature_scores"), digits=4),
+        "suitable_for_assessment": bool(ie.get("suitable_for_assessment")),
+        "suitable_image_count": _safe_int(ie.get("suitable_image_count"), 0),
+        "image_count": _safe_int(ie.get("image_count"), 0),
+        "vehicle_count": vehicle_count,
+        "damage_count": damage_count,
+        # Strip volatile paths and heavy detections: best_image_path, image_results, vehicles, invalid_paths.
+    }
+
+
+def _compact_video_result_for_dify(video_result: Dict[str, Any]) -> Dict[str, Any]:
+    vr = video_result or {}
+    evidence = vr.get("evidence") if isinstance(vr.get("evidence"), dict) else {}
+    dominant_cluster = (
+        vr.get("dominant_cluster") if isinstance(vr.get("dominant_cluster"), dict) else {}
+    )
+    keyframes = _canonical_keyframes(vr.get("keyframes"))
+    stage_scores_src = evidence.get("stage_scores") if isinstance(evidence.get("stage_scores"), dict) else {}
+    stage_scores: Dict[str, float] = {}
+    for key in ("pre", "approach", "onset", "impact", "post"):
+        if key in stage_scores_src:
+            stage_scores[key] = _round_float_or(stage_scores_src.get(key), 0.0, digits=4)
+
+    topk = []
+    for item in _canonical_type_topk(vr.get("type_topk"))[:3]:
+        topk.append(
+            {
+                "type": item.get("type", ""),
+                "label": item.get("label", ""),
+                "prob": _round_float_or(item.get("prob"), 0.0, digits=4),
+            }
+        )
+
+    return {
+        "accident_type": str(vr.get("accident_type") or "unknown"),
+        "model_pred_type": str(vr.get("model_pred_type") or vr.get("accident_type") or "unknown"),
+        "decision_mode": str(vr.get("decision_mode") or "model_main"),
+        "fallback_reason": str(vr.get("fallback_reason") or "NONE"),
+        "rear_guard_applied": bool(vr.get("rear_guard_applied")),
+        "type_confidence": _round_float_or(vr.get("type_confidence"), 0.0, digits=4),
+        "risk_level": str(vr.get("risk_level") or "unknown"),
+        "vehicle_count": _safe_int(vr.get("vehicle_count"), 0),
+        "uncertainty": _round_float_or(vr.get("uncertainty"), 1.0, digits=4),
+        "timeline": {
+            "onset_time": _round_float_or(vr.get("onset_time"), 0.0, digits=2),
+            "impact_time": _round_float_or(vr.get("impact_time"), 0.0, digits=2),
+            "post_time": _round_float_or(vr.get("post_time"), 0.0, digits=2),
+            "risk_alert_time": _round_float_or(vr.get("risk_alert_time"), 0.0, digits=2),
+            "lead_time_sec": _round_float_or(vr.get("lead_time_sec"), 0.0, digits=2),
+        },
+        "type_topk": topk,
+        "keyframe_count": len(keyframes),
+        "keyframe_overview": keyframes[:5],
+        "video_signal": {
+            "peak_risk": _round_float_or(evidence.get("peak_risk"), 0.0, digits=4),
+            "risk_threshold": _round_float_or(evidence.get("risk_threshold"), 0.0, digits=4),
+            "stage_scores": stage_scores,
+            "dominance": _round_float_or(dominant_cluster.get("dominance"), 0.0, digits=4),
+            "coverage": _round_float_or(dominant_cluster.get("coverage"), 0.0, digits=4),
+            "continuity": _round_float_or(dominant_cluster.get("continuity"), 0.0, digits=4),
+        },
+    }
+
+
+def _compact_image_evidence_for_dify(image_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    ie = image_evidence or {}
+    consistency = _canonical_image_consistency(ie.get("consistency"))
+    quality = _canonical_image_quality(ie.get("quality"))
+
+    return {
+        "module": str(ie.get("module") or ""),
+        "accident_type": str(ie.get("accident_type") or ""),
+        "rear_end_supported": bool(ie.get("rear_end_supported")),
+        "rear_end_likelihood": _round_float_or(ie.get("rear_end_likelihood"), 0.0, digits=4),
+        "rear_end_type_match_score": _round_float_or(
+            ie.get("rear_end_type_match_score", ie.get("rear_end_likelihood")),
+            0.0,
+            digits=4,
+        ),
+        "single_image_liability_trust_score": _round_float_or(
+            ie.get("single_image_liability_trust_score", ie.get("confidence")),
+            0.0,
+            digits=4,
+        ),
+        "evidence_consistency_score": _round_float_or(
+            ie.get("evidence_consistency_score", consistency.get("evidence_consistency_score")),
+            0.0,
+            digits=4,
+        ),
+        "consistency_label": str(consistency.get("consistency_label") or ""),
+        "quality_score": _round_float_or(quality.get("quality_score"), 0.0, digits=4),
+        "hard_reject": bool(quality.get("hard_reject")),
+        "reject_reasons": (quality.get("reject_reasons") or [])[:3],
+        "feature_scores": _canonical_number_dict(ie.get("feature_scores"), digits=4),
+        "role_tendency": str(ie.get("role_tendency") or ""),
+        "decision_hint": str(ie.get("decision_hint") or ""),
+        "decision_text": str(ie.get("decision_text") or ""),
+    }
+
 
 def _build_liability_evidence_packet(
     video_result: Dict[str, Any],
@@ -181,14 +592,13 @@ def _mask_secret(secret: str) -> str:
 def _get_dify_settings() -> Dict[str, Any]:
     base_url = os.getenv("DIFY_BASE_URL", "").strip().rstrip("/")
     endpoint = os.getenv("DIFY_WORKFLOW_ENDPOINT", "/v1/workflows/run").strip() or "/v1/workflows/run"
-    
     if endpoint.startswith("http://") or endpoint.startswith("https://"):
         workflow_url = endpoint
     elif base_url:
         workflow_url = f"{base_url}/{endpoint.lstrip('/')}"
     else:
-        workflow_url = ""
-    
+        workflow_url = endpoint
+
     return {
         "base_url": base_url,
         "workflow_url": workflow_url,
@@ -199,6 +609,9 @@ def _get_dify_settings() -> Dict[str, Any]:
         "video_json_key": os.getenv("DIFY_INPUT_VIDEO_JSON_KEY", "video_result_json").strip() or "video_result_json",
         "image_json_key": os.getenv("DIFY_INPUT_IMAGE_JSON_KEY", "image_evidence_json").strip() or "image_evidence_json",
         "extra_key": os.getenv("DIFY_INPUT_EXTRA_KEY", "additional_evidence").strip() or "additional_evidence",
+        "stabilize_inputs": _is_truthy_env("DIFY_STABILIZE_INPUTS", True),
+        "include_raw_inputs": _is_truthy_env("DIFY_INCLUDE_RAW_INPUTS", False),
+        "compact_json_inputs": _is_truthy_env("DIFY_COMPACT_JSON_INPUTS", True),
     }
 
 def _build_default_case_summary(
@@ -269,18 +682,42 @@ def _build_default_case_summary(
         lines.append(f"- additional_evidence: {additional_evidence.strip()}")
     return "\n".join(lines)
 
-def _build_dify_case_inputs(video_result: Dict[str, Any], image_evidence: Optional[Dict[str, Any]] = None, additional_evidence: str = "") -> Dict[str, Any]:
+def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any]:
     settings = _get_dify_settings()
-    image_evidence = image_evidence or {}
-    additional_evidence = additional_evidence or ""
+    raw_video_result = payload.video_result or {}
+    raw_image_evidence = payload.image_evidence or {}
+    additional_evidence = payload.additional_evidence or ""
 
-    liability_packet = _build_liability_evidence_packet(video_result, image_evidence, additional_evidence)
-    video_payload = {
-        **(video_result if isinstance(video_result, dict) else {}),
+    stabilize_inputs = _is_truthy_env("DIFY_STABILIZE_INPUTS", True)
+    include_raw_inputs = _is_truthy_env("DIFY_INCLUDE_RAW_INPUTS", False)
+    compact_json_inputs = _is_truthy_env("DIFY_COMPACT_JSON_INPUTS", True)
+
+    if stabilize_inputs:
+        video_result = _stabilize_video_result_for_dify(raw_video_result)
+        image_evidence = _stabilize_image_evidence_for_dify(raw_image_evidence)
+    else:
+        video_result = raw_video_result
+        image_evidence = raw_image_evidence
+
+    if compact_json_inputs:
+        dify_video_result = _compact_video_result_for_dify(video_result)
+        dify_image_evidence = _compact_image_evidence_for_dify(image_evidence)
+    else:
+        dify_video_result = video_result
+        dify_image_evidence = image_evidence
+
+    liability_packet = _build_liability_evidence_packet(
+        dify_video_result,
+        dify_image_evidence,
+        additional_evidence,
+    )
+
+    dify_video_result = {
+        **(dify_video_result if isinstance(dify_video_result, dict) else {}),
         "liability_packet": liability_packet,
     }
-    image_payload = {
-        **(image_evidence if isinstance(image_evidence, dict) else {}),
+    dify_image_evidence = {
+        **(dify_image_evidence if isinstance(dify_image_evidence, dict) else {}),
         "liability_packet": {
             "readiness": liability_packet.get("readiness"),
             "readiness_score": liability_packet.get("readiness_score"),
@@ -288,19 +725,24 @@ def _build_dify_case_inputs(video_result: Dict[str, Any], image_evidence: Option
             "recommendation": liability_packet.get("recommendation", ""),
         },
     }
+
     summary_text = _build_default_case_summary(
-        video_payload,
-        image_payload,
+        dify_video_result,
+        dify_image_evidence,
         additional_evidence,
         liability_packet,
     )
 
     inputs = {
         settings["summary_key"]: summary_text,
-        settings["video_json_key"]: json.dumps(video_payload, ensure_ascii=False),
-        settings["image_json_key"]: json.dumps(image_payload, ensure_ascii=False),
+        settings["video_json_key"]: json.dumps(dify_video_result, ensure_ascii=False),
+        settings["image_json_key"]: json.dumps(dify_image_evidence, ensure_ascii=False),
         settings["extra_key"]: additional_evidence,
     }
+
+    if include_raw_inputs:
+        inputs["raw_video_result"] = json.dumps(raw_video_result, ensure_ascii=False)
+        inputs["raw_image_evidence"] = json.dumps(raw_image_evidence, ensure_ascii=False)
 
     return inputs
 
@@ -585,7 +1027,19 @@ async def dify_workflow_run(payload: DifyWorkflowRunRequest):
 @app.post("/api/dify/analyze_accident_case/")
 async def dify_analyze_accident_case(payload: DifyAccidentCaseRequest):
     """Build accident evidence inputs and send to Dify."""
-    workflow_inputs = _build_dify_case_inputs(payload.video_result, payload.image_evidence, payload.additional_evidence)
+    request_id = uuid.uuid4().hex
+    workflow_inputs = _build_dify_case_inputs(payload)
+    request_payload = _prepare_dify_request_payload(
+        inputs=workflow_inputs,
+        user=payload.user,
+        response_mode=payload.response_mode,
+        conversation_id=payload.conversation_id,
+    )
+    input_hash = _hash_obj_sha256(request_payload)
+    video_result_hash = _hash_obj_sha256(payload.video_result or {})
+    image_evidence_hash = _hash_obj_sha256(payload.image_evidence or {})
+    workflow_inputs_hash = _hash_obj_sha256(workflow_inputs)
+
     try:
         dify_response = await run_in_threadpool(
             _call_dify_workflow,
@@ -594,12 +1048,58 @@ async def dify_analyze_accident_case(payload: DifyAccidentCaseRequest):
             payload.response_mode,
             payload.conversation_id,
         )
+        answer_text = _extract_dify_answer_text(dify_response)
+        output_hash = _hash_obj_sha256(dify_response)
+        _append_dify_hash_log(
+            {
+                "route": "/dify/analyze_accident_case/",
+                "request_id": request_id,
+                "input_hash": input_hash,
+                "output_hash": output_hash,
+                "workflow_inputs_hash": workflow_inputs_hash,
+                "video_result_hash": video_result_hash,
+                "image_evidence_hash": image_evidence_hash,
+                "input_keys": sorted(workflow_inputs.keys()),
+                "request_payload": request_payload,
+                "workflow_inputs": workflow_inputs,
+                "answer_preview": answer_text[:240],
+                "fallback": False,
+            }
+        )
+        print(
+            f"[DIFY_HASH] route=/dify/analyze_accident_case/ request_id={request_id} "
+            f"input_hash={input_hash} output_hash={output_hash}"
+        )
         return {"result": _extract_dify_result(dify_response)}
     except HTTPException as exc:
-        if str(os.getenv("DIFY_LOCAL_FALLBACK_ENABLED", "true")).strip().lower() not in {"1", "true", "yes", "on", "y"}:
+        if not _is_truthy_env("DIFY_LOCAL_FALLBACK_ENABLED", False):
             raise
+
+        fallback_markdown = _build_local_dify_fallback_markdown(payload, exc.detail)
+        fallback_hash = _hash_obj_sha256({"result": fallback_markdown, "reason": str(exc.detail)})
+        _append_dify_hash_log(
+            {
+                "route": "/dify/analyze_accident_case/",
+                "request_id": request_id,
+                "input_hash": input_hash,
+                "output_hash": fallback_hash,
+                "workflow_inputs_hash": workflow_inputs_hash,
+                "video_result_hash": video_result_hash,
+                "image_evidence_hash": image_evidence_hash,
+                "input_keys": sorted(workflow_inputs.keys()),
+                "request_payload": request_payload,
+                "workflow_inputs": workflow_inputs,
+                "answer_preview": fallback_markdown[:240],
+                "fallback": True,
+                "fallback_reason": str(exc.detail)[:360],
+            }
+        )
+        print(
+            f"[DIFY_FALLBACK] route=/dify/analyze_accident_case/ request_id={request_id} "
+            f"reason={str(exc.detail)[:180]}"
+        )
         return {
-            "result": _build_local_dify_fallback_markdown(payload, exc.detail),
+            "result": fallback_markdown,
             "mode": "local_fallback",
             "fallback_reason": str(exc.detail),
         }
@@ -608,7 +1108,7 @@ async def dify_analyze_accident_case(payload: DifyAccidentCaseRequest):
 async def dify_preview_case_inputs(payload: DifyAccidentCaseRequest):
     """Preview the exact payload that would be sent to Dify without calling Dify."""
     settings = _get_dify_settings()
-    workflow_inputs = _build_dify_case_inputs(payload.video_result, payload.image_evidence, payload.additional_evidence)
+    workflow_inputs = _build_dify_case_inputs(payload)
 
     query = workflow_inputs.get(settings["summary_key"], "")
     video_raw = workflow_inputs.get(settings["video_json_key"], "{}")
@@ -658,6 +1158,38 @@ from backend.database import (
 @app.on_event("startup")
 def startup():
     init_db()
+    # ---- 新增：确保遗留案件存在 ----
+    try:
+        from backend.database import get_db_conn
+        conn = get_db_conn()
+        conn.execute("PRAGMA foreign_keys = ON")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM cases WHERE id = 'ACC-658977'")
+        if not cursor.fetchone():
+            from datetime import datetime
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("""
+                INSERT INTO cases (id, title, accident_type, location, status, description, weather, road_env, priority, submitted_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "ACC-658977",
+                "系统预留案例（兼容旧ID）",
+                "待分析",
+                "未指定",
+                "待分析",
+                "自动创建的占位案例，避免前端404。",
+                "晴",
+                "城市道路",
+                "中",
+                now_str,
+                now_str
+            ))
+            conn.commit()
+            print("[DB] Created legacy case: ACC-658977")
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] Failed to ensure legacy case: {e}")
+    # ---------------------------------
     print("[INFO] Database initialized")
 
 # ---------------------------------------------------------------------------
@@ -782,6 +1314,36 @@ async def api_get_case(case_id: str):
         raise HTTPException(status_code=404, detail="案件不存在")
     return {"success": True, "data": case}
 
+@app.get("/api/cases/{case_id}/operation-logs")
+async def api_get_operation_logs(
+    case_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """获取案件的操作审计日志"""
+    try:
+        from backend.database import get_db_conn
+        
+        # 先校验案件是否存在
+        case = get_case(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail=f"案件 {case_id} 不存在")
+        
+        conn = get_db_conn()
+        try:
+            cursor = conn.execute(
+                "SELECT log_id, action_type, target_type, target_id, before_data, after_data, created_at "
+                "FROM operation_logs WHERE case_id = ? ORDER BY created_at DESC",
+                (case_id,)
+            )
+            logs = [dict(row) for row in cursor.fetchall()]
+            return {"success": True, "data": logs}
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询审计日志失败: {str(e)}")
+
 @app.put("/api/cases/{case_id}")
 async def api_update_case(case_id: str, data: dict):
     """更新案件"""
@@ -882,12 +1444,17 @@ async def api_add_review(case_id: str, data: dict, current_user: dict = Depends(
 @app.post("/api/cases/{case_id}/liability")
 async def api_save_liability(case_id: str, data: dict):
     """保存责任判定结果（含 liability_results + matched_rules 同步）"""
-    try:
-        if not case_id:
-            raise ValueError("case_id 不能为空")
-        if not data:
-            raise ValueError("请求数据不能为空")
+    if not case_id:
+        raise HTTPException(status_code=400, detail="case_id 不能为空")
+    if not data:
+        raise HTTPException(status_code=400, detail="请求数据不能为空")
 
+    # 校验案件是否存在
+    case = get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"案件 {case_id} 不存在，无法保存责任判定")
+
+    try:
         summary = data.get("summary", "")
         ratio = data.get("ratio", "")
         details = data.get("details", {})
@@ -909,6 +1476,7 @@ async def api_save_liability(case_id: str, data: dict):
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
+        # 这里只捕获真正未知的异常，不捕获 HTTPException
         raise HTTPException(status_code=500, detail=f"保存责任判定时发生未知错误: {str(e)}")
 
 # ---------------------------------------------------------------------------
@@ -1053,174 +1621,158 @@ ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
 @app.post("/upload_video/")
 @app.post("/api/upload_video/")
-async def upload_video(file: UploadFile = File(...), case_id: str = Form("")):
-    """Handle video upload and extract keyframes.
-    文件保存到 uploads/cases/{case_id}/videos/
-    """
-    # 检查文件扩展名
+async def upload_video(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="未接收到文件")
+
     ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+    if ext not in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
+
+    from video_keyframe import safe_filename, save_upload_file, extract_keyframes, MODEL_VERSION, REAR_GUARD_VERSION, REAR_GUARD_CONFIG
+
+    UPLOAD_DIR = BASE_DIR / "backend" / "uploaded_videos"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    saved_name = safe_filename(file.filename)
+    saved_path = UPLOAD_DIR / saved_name
+
+    try:
+        await run_in_threadpool(save_upload_file, file, saved_path)
+        result = await run_in_threadpool(extract_keyframes, saved_path)
+        keyframes = result["keyframes"]
+
+        if not keyframes:
+            raise HTTPException(status_code=500, detail="Failed to extract keyframes.")
+
+        return {
+            "video": f"/uploaded_videos/{saved_name}",
+            "model_version": result.get("model_version", MODEL_VERSION),
+            "impact_time": result["impact_time"],
+            "onset_time": result["onset_time"],
+            "post_time": result["post_time"],
+            "vehicle_count": result["vehicle_count"],
+            "accident_type": result["accident_type"],
+            "type_confidence": result["type_confidence"],
+            "type_topk": result.get("type_topk", []),
+            "model_pred_type": result.get("model_pred_type", result["accident_type"]),
+            "decision_mode": result.get("decision_mode", "model_main"),
+            "fallback_reason": result.get("fallback_reason", "NONE"),
+            "rear_guard_applied": bool(result.get("rear_guard_applied", False)),
+            "rear_guard_version": result.get("rear_guard_version", REAR_GUARD_VERSION),
+            "rear_guard_cfg": result.get("rear_guard_cfg", dict(REAR_GUARD_CONFIG)),
+            "rear_guard_detail": result.get("rear_guard_detail", {}),
+            "scene_prior": result.get("scene_prior", {}),
+            "uncertainty": result.get("uncertainty", 1.0),
+            "risk_alert_time": result.get("risk_alert_time", 0.0),
+            "lead_time_sec": result.get("lead_time_sec", 0.0),
+            "risk_level": result.get("risk_level", "unknown"),
+            "dominant_cluster": result["dominant_cluster"],
+            "dominant_pair": result.get("dominant_pair", []),
+            "evidence": result.get("evidence", {}),
+            "keyframes": keyframes
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"不支持此格式: {ext}，支持的格式: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}"
+            status_code=500,
+            detail=f"video processing failed: {type(e).__name__}: {str(e)}"
         )
-
-    if extract_keyframes_yolo is None:
-        raise HTTPException(status_code=503, detail="视频分析模块不可用")
-
-    # 确定目标目录
-    if not case_id:
-        case_id = "unknown"
-    video_dir = _get_case_upload_dir(case_id) / "videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
-
-    # 保存文件到规范路径
-    safe_filename = f"original{ext}"
-    dest_path = video_dir / safe_filename
-    try:
-        with open(dest_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
-
-    # 计算文件哈希
-    file_hash = _compute_file_hash(dest_path)
-    file_size = dest_path.stat().st_size
-
-    # 创建证据记录
-    try:
-        create_evidence_record(case_id, {
-            "evidence_type": "video",
-            "file_path": str(dest_path),
-            "file_name": file.filename,
-            "file_size": file_size,
-            "file_hash": file_hash,
-            "analysis_status": "pending",
-            "related_stage": "video-processing",
-        })
-    except Exception as e:
-        print(f"[WARN] Failed to create evidence record: {e}")
-
-    # 关键帧目录
-    keyframe_dir = _get_case_upload_dir(case_id) / "keyframes"
-    keyframe_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"[INFO] Using YOLO keyframe extraction for video: {file.filename}")
-    try:
-        result = await run_in_threadpool(extract_keyframes_yolo, dest_path)
-        if isinstance(result, dict):
-            result["file_path"] = str(dest_path)
-            result["file_hash"] = file_hash
-            result["file_size"] = file_size
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"视频分析失败: {str(e)}")
+    finally:
+        file.file.close()
 
 @app.post("/analyze_image_evidence/")
 @app.post("/api/analyze_image_evidence/")
 async def analyze_image_evidence(data: dict):
-    """Analyze image evidence and return linkage result."""
+    """Analyze image evidence using real classifier."""
+    from video_keyframe import _resolve_keyframe_path, get_image_classifier
+
     try:
         frame_url = data.get("frame_url", "")
         video_context = data.get("video_context", {})
-        
-        accident_type = video_context.get("accident_type", "rear_end")
-        risk_level = video_context.get("risk_level", "medium")
-
-        rear_end_type_match_score = 0.75 + (accident_type in {"rear_end", "追尾事故"}) * 0.2
-        single_image_liability_trust_score = 0.65 + (risk_level == "high") * 0.15
-        
-        evidence_consistency_score = 0.85
-        
-        result = {
-            "image_evidence": {
-                "rear_end_type_match_score": rear_end_type_match_score,
-                "single_image_liability_trust_score": single_image_liability_trust_score,
-                "consistency": {
-                    "evidence_consistency_score": evidence_consistency_score
-                }
-            }
+        frame_path = _resolve_keyframe_path(frame_url)
+        classifier = get_image_classifier()
+        base_result = await run_in_threadpool(
+            classifier.classify_rear_end,
+            str(frame_path),
+        )
+        result = dict(base_result) if isinstance(base_result, dict) else {"raw": base_result}
+        if video_context:
+            result.setdefault("video_context", video_context)
+        return {
+            "frame_path": str(frame_path),
+            "frame_url": frame_url,
+            "image_evidence": result,
         }
-        
-        print(f"Image evidence analysis complete: frame_url={frame_url}, accident_type={accident_type}")
-        return result
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Image evidence analysis failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Image evidence analysis failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"image evidence analysis failed: {str(e)}")
 
 @app.post("/analyze_image_file_evidence/")
-async def analyze_image_file_evidence(file: UploadFile = File(...), video_context: str = None, case_id: str = Form("")):
-    """Analyze uploaded image evidence.
-    图片保存到 uploads/cases/{case_id}/images/
-    """
-    # 检查文件扩展名
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持此格式: {ext}，支持的格式: {', '.join(ALLOWED_IMAGE_EXTENSIONS)}"
-        )
+@app.post("/api/analyze_image_file_evidence/")
+async def analyze_image_file_evidence(
+    file: UploadFile = File(...),
+    video_context: str = Form(None),
+):
+    """Analyze uploaded image file using real classifier."""
+    from video_keyframe import get_image_classifier, save_upload_file
 
-    video_ctx = {}
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="未接收到图片文件")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+        raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext}")
+
+    UPLOAD_DIR = BASE_DIR / "backend" / "uploaded_videos"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    saved_name = f"image_{uuid.uuid4().hex[:10]}{ext}"
+    saved_path = UPLOAD_DIR / saved_name
+
+    parsed_video_context: Dict[str, Any] = {}
     if video_context:
         try:
-            video_ctx = json.loads(video_context)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"video_context parse failed: {str(e)}")
-
-    if not case_id:
-        case_id = "unknown"
-    image_dir = _get_case_upload_dir(case_id) / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
-
-    # 保存文件到规范路径
-    safe_filename = f"scene_{uuid.uuid4().hex[:8]}{ext}"
-    dest_path = image_dir / safe_filename
-    try:
-        with open(dest_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
-
-    # 计算文件哈希
-    file_hash = _compute_file_hash(dest_path)
-    file_size = dest_path.stat().st_size
-
-    # 创建证据记录
-    try:
-        create_evidence_record(case_id, {
-            "evidence_type": "image",
-            "file_path": str(dest_path),
-            "file_name": file.filename,
-            "file_size": file_size,
-            "file_hash": file_hash,
-            "analysis_status": "pending",
-            "related_stage": "image-analysis",
-        })
-    except Exception as e:
-        print(f"[WARN] Failed to create evidence record: {e}")
+            parsed_video_context = json.loads(video_context)
+            if not isinstance(parsed_video_context, dict):
+                parsed_video_context = {}
+        except Exception:
+            parsed_video_context = {}
 
     try:
-        from video_keyframe import get_image_classifier
+        await run_in_threadpool(save_upload_file, file, saved_path)
         classifier = get_image_classifier()
-        result = await run_in_threadpool(
+        base_result = await run_in_threadpool(
             classifier.classify_rear_end,
-            str(dest_path),
+            str(saved_path),
         )
-        if isinstance(result, dict) and video_ctx:
-            result["video_context"] = video_ctx
-        if isinstance(result, dict):
-            result["file_path"] = str(dest_path)
-            result["file_hash"] = file_hash
-        return {"success": True, "image_evidence": result}
-    except Exception as classifier_err:
-        print(f"[WARN] Image classifier failed, returning error: {classifier_err}")
+        result = dict(base_result) if isinstance(base_result, dict) else {"raw": base_result}
+        if parsed_video_context:
+            result.setdefault("video_context", parsed_video_context)
+            for key in ("accident_type", "type_confidence", "evidence_consistency_score"):
+                if key in parsed_video_context:
+                    result[f"ctx_{key}"] = parsed_video_context[key]
         return {
-            "success": False,
-            "status": "failed",
-            "error_code": "MODEL_UNAVAILABLE",
-            "message": "图片分析模型暂不可用，请重新上传或进入人工复核",
+            "image_evidence": result,
+            "filename": file.filename,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"image evidence analysis failed: {str(e)}")
+    finally:
+        file.file.close()
+        try:
+            if saved_path.exists():
+                saved_path.unlink()
+        except Exception:
+            pass
         
 # ---------------------------------------------------------------------------
 # Task 3: 证据管理 API
@@ -1229,6 +1781,12 @@ async def analyze_image_file_evidence(file: UploadFile = File(...), video_contex
 async def api_create_evidence(case_id: str, data: dict):
     """添加证据记录"""
     try:
+        # ========== 新增：校验案件是否存在 ==========
+        case = get_case(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail=f"案件 {case_id} 不存在，无法添加证据")
+        # =========================================
+
         evidence_type = data.get("evidence_type", "image")
         file_path = data.get("file_path", "")
         content = data.get("content", "")
@@ -1253,6 +1811,8 @@ async def api_create_evidence(case_id: str, data: dict):
             "metadata": data.get("metadata", {}),
         })
         return {"success": True, "data": ev}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建证据记录失败: {str(e)}")
 
@@ -1856,16 +2416,19 @@ async def health_check():
     return health_info
 
 
-# Serve static files for temp and keyframes
+# Serve static files for temp, keyframes, and uploaded_videos
 app.mount("/temp", StaticFiles(directory=str(TEMP_DIR)), name="temp")
 app.mount("/keyframes", StaticFiles(directory=str(KEYFRAME_DIR)), name="keyframes")
+UPLOADED_VIDEOS_DIR = BASE_DIR / "backend" / "uploaded_videos"
+UPLOADED_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploaded_videos", StaticFiles(directory=str(UPLOADED_VIDEOS_DIR)), name="uploaded_videos")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         timeout_keep_alive=300,   # 5分钟，足够处理长视频
         timeout_graceful_shutdown=30
     )

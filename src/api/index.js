@@ -1,7 +1,7 @@
 // API接口层 - 统一管理所有接口请求
 // 使用真实后端API，通过HTTP请求与FastAPI后端通信
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = '';   // 强制为空
 
 // 存储token和用户信息
 let authToken = localStorage.getItem('auth-token') || ''
