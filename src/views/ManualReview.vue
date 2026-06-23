@@ -334,10 +334,14 @@ const {
   resetFlow,
   getLogs,
   logMessage,
-  LOG_LEVELS
+  LOG_LEVELS,
+  setCurrentCase
 } = useAccidentFlow()
 
 goStep('manual-review')
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
 
 const reviewNote = ref(state.manualReview.note || '')
 const editingLiabilities = ref([])
@@ -346,8 +350,10 @@ const submitting = ref(false)
 
 // 获取历史复核记录
 async function fetchReviews() {
-  const caseId = route.query.caseId || state.caseId
+  const caseId = currentCaseId()
   if (!caseId) return
+  // 同步到 store（防止刷新后 store 丢失）
+  if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   try {
     const result = await CasesAPI.getReviews(caseId)
     if (result.success && Array.isArray(result.data)) {
@@ -495,7 +501,7 @@ function handleSubmitReview() {
   })
 
   // Save review to backend
-  const caseId = route.query.caseId || state.caseId
+  const caseId = currentCaseId()
   const currentUserObj = getCurrentUser()
   const reviewer = currentUserObj?.display_name || currentUserObj?.username || '未知用户'
   const systemSuggestion = state.analysis.reasoningText || state.recommendation.summary || ''

@@ -265,16 +265,21 @@ import { StatsAPI, CasesAPI, TasksAPI, RulesAPI, HealthAPI } from '../api/index.
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 
 const router = useRouter()
-const { 
-  state, 
-  resetFlow, 
+const {
+  state,
+  resetFlow,
   updateForm,
   goStep,
-  getRecentCases, 
+  getRecentCases,
   getPendingTasks,
   completeTask,
-  initRuleLibrary 
+  initRuleLibrary,
+  setCurrentCase,
+  getCurrentCase
 } = useAccidentFlow()
+
+// 统一获取 caseId
+const currentCaseId = () => getCurrentCase()
 
 // 初始化
 onMounted(() => {
@@ -555,11 +560,8 @@ const refreshData = async () => {
       }
     } catch (e) {
       console.warn('获取案件列表失败:', e)
-      // Fallback to local store
-      try {
-        const localCases = getRecentCases(100)
-        recentCases.value = localCases
-      } catch {}
+      // 后端不可用时不显示模拟数据，避免点击后 404
+      recentCases.value = []
     }
 
     // 3. 获取任务列表
@@ -594,21 +596,23 @@ const refreshData = async () => {
 }
 
 const continueCurrentCase = () => {
+  const cid = currentCaseId()
+  const withQuery = (path) => cid ? { path, query: { caseId: cid } } : path
   switch (state.step) {
     case 'video-processing':
-      router.push('/video-processing')
+      router.push(withQuery('/video-processing'))
       break
     case 'analysis':
-      router.push('/intelligent-analysis')
+      router.push(withQuery('/intelligent-analysis'))
       break
     case 'recommendation':
-      router.push('/liability-recommendation')
+      router.push(withQuery('/liability-recommendation'))
       break
     case 'rule-basis':
-      router.push('/rule-basis')
+      router.push(withQuery('/rule-basis'))
       break
     case 'manual-review':
-      router.push('/manual-review')
+      router.push(withQuery('/manual-review'))
       break
     default:
       router.push('/accident-entry')
@@ -628,7 +632,8 @@ const handleContinueCase = () => {
   if (recentCases.value.length > 0) {
     const latestCase = recentCases.value[0]
     notify({ title: '继续处理', message: `正在继续处理案件 ${latestCase.id}: ${latestCase.type}` })
-    router.push('/accident-entry')
+    setCurrentCase(latestCase.id)
+    router.push({ path: '/accident-entry', query: { caseId: latestCase.id } })
   } else {
     notify({ title: '提示', message: '当前没有待处理的案件', type: 'info' })
   }
@@ -662,7 +667,7 @@ const continueEditCase = async (caseItem) => {
     if (result.success && result.data) {
       const c = result.data
       resetFlow()
-      state.caseId = c.id
+      setCurrentCase(c.id)
       updateForm({
         accidentType: c.accident_type || c.title || '',
         location: c.location || '',
@@ -676,7 +681,7 @@ const continueEditCase = async (caseItem) => {
       }
       goStep('accident-entry')
       notify({ title: '恢复成功', message: `已恢复案件 ${c.id}，请继续处理`, type: 'success' })
-      router.push('/video-processing')
+      router.push({ path: '/video-processing', query: { caseId: c.id } })
     } else {
       notify({ title: '案件不存在', message: `案件 ${caseItem.id} 未找到，可能已被删除`, type: 'warning' })
       // 刷新列表以移除无效案件
@@ -700,17 +705,21 @@ const processTask = (task) => {
     if (archivedCase && archivedCase.snapshot) {
       resetFlow()
       Object.assign(state, archivedCase.snapshot.state)
-      state.caseId = caseId
+      setCurrentCase(caseId)
+    } else {
+      // 没有归档快照，至少设置当前 caseId
+      setCurrentCase(caseId)
     }
   }
   
+  const withQuery = (path) => caseId ? { path, query: { caseId } } : path
   if (task.type === '智能分析' || task.type === 'analysis') {
-    router.push('/intelligent-analysis')
+    router.push(withQuery('/intelligent-analysis'))
   } else if (task.type === '人工复核' || task.type === 'review') {
-    router.push('/manual-review')
+    router.push(withQuery('/manual-review'))
   } else {
     // 默认回到事故录入
-    router.push('/accident-entry')
+    router.push(withQuery('/accident-entry'))
   }
 }
 

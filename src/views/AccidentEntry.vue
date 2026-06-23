@@ -243,8 +243,11 @@ import { CasesAPI } from '../api/index.js'
 
 const router = useRouter()
 const route = useRoute()
-const { state, updateForm, completeIntake, goStep } = useAccidentFlow()
+const { state, updateForm, completeIntake, goStep, setCurrentCase } = useAccidentFlow()
 const submitting = ref(false)
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
 
 const workflowRoutes = [
   { path: '/overview', name: '首页' },
@@ -277,13 +280,17 @@ const hasNext = computed(() => {
 
 const goPrev = () => {
   if (hasPrev.value) {
-    router.push(workflowRoutes[currentIndex.value - 1].path)
+    const cid = currentCaseId()
+    const path = workflowRoutes[currentIndex.value - 1].path
+    router.push(cid ? { path, query: { caseId: cid } } : path)
   }
 }
 
 const goNext = () => {
   if (hasNext.value) {
-    router.push(workflowRoutes[currentIndex.value + 1].path)
+    const cid = currentCaseId()
+    const path = workflowRoutes[currentIndex.value + 1].path
+    router.push(cid ? { path, query: { caseId: cid } } : path)
   }
 }
 
@@ -817,8 +824,8 @@ const submitAnalysis = async () => {
     })
 
     if (result.success && result.data) {
-      // 更新本地 caseId 为后端返回的 ID
-      state.caseId = result.data.id
+      // 更新当前案件 ID 为后端返回的 ID（同步到 store + localStorage）
+      setCurrentCase(result.data.id)
       
       // 保存快照到后端
       try {
@@ -833,10 +840,10 @@ const submitAnalysis = async () => {
         console.warn('保存快照失败', e)
       }
 
-      // 流程步进
+      // 流程步进（跳转时携带 caseId，确保后续页面可获取）
       goStep('accident-entry')
-      const nextRoute = completeIntake()
-      router.push(nextRoute)
+      completeIntake()
+      router.push({ path: '/video-processing', query: { caseId: result.data.id } })
       notify({ title: '提交成功', message: `${result.data.id} 已提交分析。` })
     } else {
       notify({ title: '提交失败', message: '后端返回异常，请重试。', type: 'error' })
@@ -857,7 +864,8 @@ onMounted(async () => {
     const result = await CasesAPI.get(caseId)
     if (result.success && result.data) {
       const c = result.data
-      state.caseId = c.id
+      // 同步到 store + localStorage
+      setCurrentCase(c.id)
       updateForm({
         accidentType: c.accident_type || '',
         location: c.location || '',

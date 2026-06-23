@@ -413,10 +413,14 @@ const {
   state,
   goStep,
   completeAnalysis,
-  updateRecommendation
+  updateRecommendation,
+  setCurrentCase
 } = useAccidentFlow()
 
 goStep('analysis')
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
 
 // 从后端加载案件详情
 async function loadCaseFromBackend(caseId) {
@@ -424,7 +428,8 @@ async function loadCaseFromBackend(caseId) {
     const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
       const caseData = result.data
-      state.caseId = caseData.id || caseId
+      // 同步到 store + localStorage
+      setCurrentCase(caseData.id || caseId)
       state.form.accidentType = caseData.accident_type || caseData.title || ''
       state.form.location = caseData.location || ''
       state.form.time = caseData.submitted_at || ''
@@ -437,8 +442,10 @@ async function loadCaseFromBackend(caseId) {
 
 // 从后端加载案件责任结果
 async function loadCaseLiability() {
+  const caseId = currentCaseId()
+  if (!caseId) return
   try {
-    const result = await CasesAPI.getDetail(state.caseId)
+    const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
       const liability = result.data.liability
       if (liability) {
@@ -455,12 +462,14 @@ async function loadCaseLiability() {
 }
 
 onMounted(() => {
-  // Load case from query params if provided (e.g., from HistoryCases redirect)
+  // 统一 caseId 来源：优先 URL query，fallback store
   const caseIdFromQuery = route.query.caseId
-  if (caseIdFromQuery && !state.caseId) {
-    state.caseId = String(caseIdFromQuery)
-    // Load case details from backend
-    loadCaseFromBackend(caseIdFromQuery)
+  if (caseIdFromQuery) {
+    // query 存在时，同步到 store 并加载案件详情
+    if (String(caseIdFromQuery) !== String(state.caseId)) {
+      setCurrentCase(caseIdFromQuery)
+      loadCaseFromBackend(caseIdFromQuery)
+    }
   }
   loadCaseLiability()
   loadConsistency()
@@ -502,11 +511,12 @@ const ringStyle = computed(() => {
 })
 
 async function loadConsistency() {
-  if (!state.caseId) return
+  const caseId = currentCaseId()
+  if (!caseId) return
   consistencyLoading.value = true
   consistencyError.value = ''
   try {
-    const result = await CasesAPI.getEvidenceConsistency(state.caseId)
+    const result = await CasesAPI.getEvidenceConsistency(caseId)
     if (result.success && result.data) {
       consistencyData.value = result.data
     } else {
@@ -534,7 +544,7 @@ const hasAnalysis = computed(() => {
 })
 
 const goToVideoProcessing = () => {
-  router.push('/video-processing')
+  router.push({ path: '/video-processing', query: { caseId: currentCaseId() } })
 }
 
 const icons = {
@@ -1260,10 +1270,12 @@ const confirmAnalysis = async () => {
       })),
     }
     console.log('[confirmAnalysis] Saving liability:', payload)
-    const result = await CasesAPI.saveLiability(state.caseId, payload)
+    const result = await CasesAPI.saveLiability(currentCaseId(), payload)
     console.log('[confirmAnalysis] Result:', result)
     if (result.success) {
-      notify({ title: '保存成功', message: '责任判定结果已保存到数据库', type: 'success' })
+      // 标记分析步骤完成
+      completeAnalysis()
+      notify({ title: '保存成功', message: '责任判定结果已保存，可进入责任建议页面', type: 'success' })
       // Refresh to show saved data
       await loadCaseLiability()
     } else {

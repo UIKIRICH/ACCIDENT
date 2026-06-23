@@ -432,7 +432,7 @@ const icons = {
   clock: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8" fill-opacity="0.2"/><polyline points="12 6 12 12 16 14" fill="none" stroke-width="2"/></svg>`
 }
 
-const { state, resetFlow, updateArchivedCase, deleteArchivedCase } = useAccidentFlow()
+const { state, resetFlow, updateArchivedCase, deleteArchivedCase, setCurrentCase, getCurrentCase } = useAccidentFlow()
 
 const keyword = ref('')
 const statusFilter = ref('全部')
@@ -512,7 +512,7 @@ const cases = computed(() => {
   // 如果当前案件未归档，添加到列表头部
   if (state.step !== 'overview' && state.step !== 'archived') {
     const currentCase = {
-      caseId: state.caseId,
+      caseId: getCurrentCase(),
       title: state.form.accidentType || '未命名案件',
       location: state.form.location,
       status: state.step === 'accident-entry' || state.step === 'video-processing' ? '待分析' : '处理中',
@@ -645,6 +645,8 @@ const viewCase = async (item) => {
 
 const continueCase = (item) => {
   notify({ title: '继续处理', message: `正在加载案件 ${item.caseId}` })
+  // 同步到 store + localStorage
+  setCurrentCase(item.caseId)
   const status = item.status
   let targetPath = '/accident-entry'
   if (status === '待分析') {

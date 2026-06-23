@@ -307,7 +307,6 @@ def init_db():
     # 创建所有表（不会删除已有数据）
     Base.metadata.create_all(bind=engine)
 
-    # 额外：确保外键在连接级别已开启（上面已监听）
     db = SessionLocal()
     try:
         # ---- 默认管理员 ----
@@ -325,11 +324,16 @@ def init_db():
                 ))
         db.commit()
 
-        # ---- 默认规则 ----
+        # ---- 默认规则（完整 7 条） ----
         if db.query(Rule).count() == 0:
             default_rules = [
                 ("R-001", "后车未保持安全距离", "追尾事故", "同向行驶", "后车与前车的距离不足安全距离（至少3秒车距），造成追尾事故，后车负全部责任。"),
-                # ... 其他规则保持不变 ...
+                ("R-002", "变道未打转向灯", "变道事故", "车道变更", "变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"),
+                ("R-003", "闯红灯行为", "路口事故", "交叉路口", "违反交通信号灯指示，闯红灯造成事故，闯红灯车辆负全部责任。"),
+                ("R-004", "倒车未观察", "倒车事故", "停车场/倒车", "倒车时未仔细观察后方情况，造成碰撞事故，倒车方负全部责任。"),
+                ("R-005", "超速行驶", "一般事故", "限速路段", "超过规定速度行驶，导致制动距离不足或失控，超速车辆根据情节承担相应责任。"),
+                ("R-006", "逆行", "一般事故", "单行道", "机动车逆向行驶，与对向正常行驶车辆相撞，逆行车辆负全部责任。"),
+                ("R-007", "违法变更车道", "变道事故", "车道变更", "连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"),
             ]
             for rid, rname, rtype, rscene, rcontent in default_rules:
                 db.add(Rule(id=rid, name=rname, type=rtype, scene=rscene, content=rcontent))
@@ -339,12 +343,196 @@ def init_db():
         demo_id = "ACC-DEMO-2025-0001"
         demo = db.query(Case).filter(Case.id == demo_id).first()
         if not demo:
-            # 插入案例和所有关联数据（您原来的代码，保持不变）
-            # ...（这里保留您原有的演示案例创建逻辑）
-            pass
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            demo_case = Case(
+                id=demo_id,
+                title="双车并行变道碰撞事故（演示案例）",
+                accident_type="变道事故",
+                location="G15沈海高速K120+500",
+                status="已完成",
+                description="两辆小轿车在高速并行行驶过程中，左侧车辆在未打转向灯的情况下突然向右变道，与右侧正常行驶车辆发生碰撞。",
+                weather="晴",
+                road_env="高速公路，双向四车道",
+                vehicle_info=json.dumps([
+                    {"name": "车辆A（变道车）", "type": "小轿车", "color": "白色", "plate": "沪A·12345"},
+                    {"name": "车辆B（被撞车）", "type": "小轿车", "color": "黑色", "plate": "沪B·67890"}
+                ], ensure_ascii=False),
+                priority="高",
+                submitted_at=now_str,
+                updated_at=now_str,
+            )
+            db.add(demo_case)
+            db.flush()
 
-        # ---- 兼容历史缓存 ID（关键） ----
-        legacy_ids = ["ACC-658977"]   # 您可以维护一个列表
+            # 1. evidence 记录
+            ev1 = Evidence(
+                case_id=demo_id,
+                evidence_type="video",
+                file_path="uploads/cases/ACC-DEMO-2025-0001/videos/demo.mp4",
+                file_name="demo.mp4",
+                file_size=15728640,
+                file_hash="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+                upload_time=now_str,
+                analysis_status="completed",
+                related_stage="video-processing",
+                extra_data="{}"
+            )
+            db.add(ev1)
+            db.flush()
+            ev1_id = ev1.evidence_id
+
+            ev2 = Evidence(
+                case_id=demo_id,
+                evidence_type="image",
+                file_path="uploads/cases/ACC-DEMO-2025-0001/images/scene_1.jpg",
+                file_name="scene_1.jpg",
+                file_size=524288,
+                file_hash="b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7",
+                upload_time=now_str,
+                analysis_status="completed",
+                related_stage="image-analysis",
+                extra_data="{}"
+            )
+            db.add(ev2)
+            db.flush()
+            ev2_id = ev2.evidence_id
+
+            # 2. analysis_task 记录
+            db.add(AnalysisTask(
+                task_id="AT-DEMO-00000001",
+                case_id=demo_id,
+                task_type="full_analysis",
+                task_status="success",
+                progress=100,
+                result_json=json.dumps({"status": "completed", "summary": "分析完成", "ratio": "7:3", "hit_rules_count": 2}),
+                error_message="",
+                created_at=now_str,
+                updated_at=now_str
+            ))
+
+            # 3. structured_fact 记录（3条）
+            db.add(StructuredFact(
+                case_id=demo_id,
+                source_type="video_analysis",
+                fact_type="accident_type",
+                fact_value="变道事故",
+                confidence=0.92,
+                evidence_id=ev1_id,
+                keyframe_time=3.5
+            ))
+            db.add(StructuredFact(
+                case_id=demo_id,
+                source_type="video_analysis",
+                fact_type="vehicle_count",
+                fact_value="2",
+                confidence=0.95,
+                evidence_id=ev1_id,
+                keyframe_time=3.5
+            ))
+            db.add(StructuredFact(
+                case_id=demo_id,
+                source_type="image_analysis",
+                fact_type="lane_change_detected",
+                fact_value="true",
+                confidence=0.88,
+                evidence_id=ev2_id,
+                keyframe_time=None
+            ))
+
+            # 4. matched_rule 记录（2条）
+            db.add(MatchedRule(
+                case_id=demo_id,
+                rule_id="R-002",
+                rule_name="变道未打转向灯",
+                trigger_condition="变道未打灯",
+                trigger_reason="视频分析显示变道前未打转向灯",
+                legal_basis="变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"
+            ))
+            db.add(MatchedRule(
+                case_id=demo_id,
+                rule_id="R-007",
+                rule_name="违法变更车道",
+                trigger_condition="连续变道",
+                trigger_reason="视频分析显示车辆连续变更两条车道",
+                legal_basis="连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"
+            ))
+
+            # 5. liability_result 记录
+            db.add(LiabilityResult(
+                case_id=demo_id,
+                summary="双车并行变道碰撞事故分析结果：变道车辆（车辆A）在未打转向灯的情况下连续变更两条车道，负主要责任。",
+                ratio="7:3",
+                details=json.dumps({
+                    "analysis": "视频分析显示变道车辆未打转向灯且连续变道，负主要责任",
+                    "vehicle_a": "变道车辆，未打转向灯，连续变道，负70%责任",
+                    "vehicle_b": "正常行驶，未及时发现变道车辆，负30%责任"
+                }),
+                hit_rules=json.dumps([
+                    {"code": "R-002", "name": "变道未打转向灯"},
+                    {"code": "R-007", "name": "违法变更车道"}
+                ])
+            ))
+
+            # 6. analysis_version 记录（版本号=1）
+            db.add(AnalysisVersion(
+                case_id=demo_id,
+                version_no=1,
+                facts_json=json.dumps({"accident_type": "变道事故", "vehicle_count": 2, "impact_detected": True}),
+                matched_rules_json=json.dumps([
+                    {"code": "R-002", "name": "变道未打转向灯"},
+                    {"code": "R-007", "name": "违法变更车道"}
+                ]),
+                suggestion_json=json.dumps({"ratio": "7:3", "summary": "变道车辆负主要责任"}),
+                model_version="v1.0"
+            ))
+
+            # 7. review 记录
+            db.add(Review(
+                case_id=demo_id,
+                reviewer="系统管理员",
+                system_suggestion="建议变道车辆（车辆A）负主要责任（70%），被撞车辆（车辆B）负次要责任（30%）",
+                final_result="同意系统建议",
+                review_comment="视频证据清晰，变道车辆未打转向灯且连续变道，事实清楚，责任划分合理。",
+                review_time=now_str
+            ))
+
+            # 8. operation_log 记录
+            db.add(OperationLog(
+                case_id=demo_id,
+                user_id=1,
+                action_type="case_archived",
+                target_type="case",
+                target_id=demo_id,
+                before_data=None,
+                after_data=json.dumps({"status": "已完成"})
+            ))
+
+            db.commit()
+            print(f"[DB] Created demo case with full data: {demo_id}")
+
+            # 创建文件目录结构
+            try:
+                from pathlib import Path
+                base_dir = Path(__file__).parent.parent.absolute()
+                demo_upload_dir = base_dir / "uploads" / "cases" / demo_id
+                for subdir in ["videos", "images", "keyframes", "reports"]:
+                    (demo_upload_dir / subdir).mkdir(parents=True, exist_ok=True)
+                print(f"[DB] Created demo case directories: {demo_upload_dir}")
+            except Exception as dir_err:
+                print(f"[WARN] Failed to create demo directories: {dir_err}")
+        else:
+            # 确保目录存在
+            try:
+                from pathlib import Path
+                base_dir = Path(__file__).parent.parent.absolute()
+                demo_upload_dir = base_dir / "uploads" / "cases" / demo_id
+                for subdir in ["videos", "images", "keyframes", "reports"]:
+                    (demo_upload_dir / subdir).mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+        # ---- 兼容历史缓存 ID ----
+        legacy_ids = ["ACC-658977"]
         for lid in legacy_ids:
             if not db.query(Case).filter(Case.id == lid).first():
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -362,14 +550,6 @@ def init_db():
                     updated_at=now_str,
                 ))
         db.commit()
-
-        # ---- 确保必要的文件目录存在 ----
-        from pathlib import Path
-        base_dir = Path(__file__).parent.parent.absolute()
-        for case_id in [demo_id] + legacy_ids:
-            upload_dir = base_dir / "uploads" / "cases" / case_id
-            for sub in ["videos", "images", "keyframes", "reports"]:
-                (upload_dir / sub).mkdir(parents=True, exist_ok=True)
 
         print("[DB] Database initialized successfully.")
     finally:

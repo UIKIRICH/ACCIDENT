@@ -201,25 +201,38 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
 import { CasesAPI } from '../api/index.js'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const {
   state,
   goStep,
-  completeRecommendation
+  completeRecommendation,
+  setCurrentCase
 } = useAccidentFlow()
 
 goStep('recommendation')
 
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
+
 async function loadCaseLiability() {
+  const caseId = currentCaseId()
+  if (!caseId) {
+    notify({ title: '无案件', message: '未指定案件，请从历史案例选择', type: 'warning' })
+    setTimeout(() => router.push('/history-cases'), 1500)
+    return
+  }
+  // 同步到 store（防止刷新后 store 丢失）
+  if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   try {
-    const result = await CasesAPI.getDetail(state.caseId)
+    const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
       const liability = result.data.liability
       if (liability) {
@@ -229,7 +242,7 @@ async function loadCaseLiability() {
       }
     } else {
       // 案件不存在
-      notify({ title: '案件不存在', message: `案件 ${state.caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
       setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (e) {
@@ -594,8 +607,8 @@ const getSeverity = () => {
 }
 
 const handleConfirmLiability = () => {
-  const nextRoute = completeRecommendation()
-  router.push(nextRoute)
+  completeRecommendation()
+  router.push({ path: '/rule-basis', query: { caseId: currentCaseId() } })
   notify({ title: '责任确认', message: '责任认定已确认，进入规则依据页面' })
 }
 
@@ -606,7 +619,7 @@ const handlePrintReport = () => {
     printWindow.document.write(`
       <html>
         <head>
-          <title>责任认定报告 - ${state.caseId}</title>
+          <title>责任认定报告 - ${currentCaseId() || ''}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 40px; }
             h2 { color: #333; border-bottom: 2px solid #eee; padding-bottom: 10px; }
@@ -631,7 +644,7 @@ const handlePrintReport = () => {
         </head>
         <body>
           <h1 style="text-align: center; margin-bottom: 30px;">事故责任认定报告</h1>
-          <p><strong>案件编号:</strong> ${state.caseId}</p>
+          <p><strong>案件编号:</strong> ${currentCaseId() || ''}</p>
           <p><strong>事故类型:</strong> ${state.form.accidentType || '待分析'}</p>
           <p><strong>生成时间:</strong> ${new Date().toLocaleString()}</p>
           ${printContent.innerHTML}
@@ -648,7 +661,7 @@ const handlePrintReport = () => {
 }
 
 const viewReport = () => {
-  router.push('/report-detail')
+  router.push({ path: '/report-detail', query: { caseId: currentCaseId() } })
 }
 
 const submitReview = () => {
@@ -668,7 +681,7 @@ const submitReview = () => {
     vehicleLiabilities: vehicleLiabilities.value
   })
 
-  router.push('/manual-review')
+  router.push({ path: '/manual-review', query: { caseId: currentCaseId() } })
   notify({ title: '提交成功', message: '案件已提交到复核队列' })
 }
 

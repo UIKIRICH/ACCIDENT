@@ -66,9 +66,13 @@ async function syncData(module, action, data) {
   }
 }
 
+// 当前案件 ID 持久化 key
+const CURRENT_CASE_STORAGE_KEY = 'accident-platform-current-case-id'
+
 // 初始状态
 const initialState = () => ({
-  caseId: `ACC-${Date.now().toString().slice(-6)}`,
+  // caseId 不再前端随机生成，由后端创建案件后返回；初始为 null
+  caseId: null,
   step: 'overview',
   form: {
     time: '',
@@ -535,6 +539,50 @@ const initialState = () => ({
 
 const state = reactive(initialState())
 
+  // 应用启动时从 localStorage 恢复上次的 caseId（后端返回的真实 ID）
+  ; (() => {
+    try {
+      const saved = localStorage.getItem(CURRENT_CASE_STORAGE_KEY)
+      if (saved && saved.trim()) {
+        state.caseId = saved.trim()
+      }
+    } catch (e) {
+      // 忽略 localStorage 读取错误
+    }
+  })()
+
+// ── caseId 统一管理 API ──
+// 设置当前案件 ID（来源：后端创建案件返回 / 历史案件恢复 / URL query）
+function setCurrentCase(caseId) {
+  const id = caseId ? String(caseId).trim() : null
+  state.caseId = id
+  try {
+    if (id) {
+      localStorage.setItem(CURRENT_CASE_STORAGE_KEY, id)
+    } else {
+      localStorage.removeItem(CURRENT_CASE_STORAGE_KEY)
+    }
+  } catch (e) {
+    // 忽略 localStorage 写入错误
+  }
+  logMessage(LOG_LEVELS.INFO, 'SYSTEM', 'SET_CURRENT_CASE', `当前案件 ID 设为 ${id || 'null'}`)
+}
+
+// 获取当前案件 ID（优先 state，fallback localStorage）
+function getCurrentCase() {
+  if (state.caseId) return state.caseId
+  try {
+    const saved = localStorage.getItem(CURRENT_CASE_STORAGE_KEY)
+    if (saved && saved.trim()) {
+      state.caseId = saved.trim()
+      return state.caseId
+    }
+  } catch (e) {
+    // 忽略
+  }
+  return null
+}
+
 const stepLabelMap = {
   overview: '首页总览',
   'accident-entry': '事故录入',
@@ -709,14 +757,15 @@ function resetFlow() {
 
 // 清除无效的案件ID
 function clearInvalidCase() {
-  state.caseId = initialState().caseId
+  // 重置为 null，不再随机生成
+  setCurrentCase(null)
   state.step = 'overview'
-  // 清除 localStorage 和 sessionStorage 中的 caseId 相关缓存
+  // 清除 localStorage 和 sessionStorage 中的旧版 caseId 缓存（历史残留）
   try {
     const keysToRemove = []
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
-      if (key && (key.includes('caseId') || key.includes('case_id') || key === 'currentCase')) {
+      if (key && key !== CURRENT_CASE_STORAGE_KEY && (key.includes('caseId') || key.includes('case_id') || key === 'currentCase')) {
         keysToRemove.push(key)
       }
     }
@@ -1037,6 +1086,9 @@ export function useAccidentFlow() {
   return {
     state,
     currentStatusLabel,
+    // caseId 统一管理
+    setCurrentCase,
+    getCurrentCase,
     updateForm,
     updateAnalysis,
     updateRecommendation,

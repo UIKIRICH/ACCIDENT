@@ -124,21 +124,33 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
 import { CasesAPI } from '../api/index.js'
 
 const router = useRouter()
-const { state } = useAccidentFlow()
+const route = useRoute()
+const { state, setCurrentCase } = useAccidentFlow()
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
 
 const goBack = () => {
   router.back()
 }
 
 async function loadCaseLiability() {
+  const caseId = currentCaseId()
+  if (!caseId) {
+    notify({ title: '无案件', message: '未指定案件，请从历史案例选择', type: 'warning' })
+    setTimeout(() => router.push('/history-cases'), 1500)
+    return
+  }
+  // 同步到 store（防止刷新后 store 丢失）
+  if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   try {
-    const result = await CasesAPI.getDetail(state.caseId)
+    const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
       const liability = result.data.liability
       if (liability) {
@@ -149,7 +161,7 @@ async function loadCaseLiability() {
       }
     } else {
       // 案件不存在
-      notify({ title: '案件不存在', message: `案件 ${state.caseId} 未找到，请从历史案例选择`, type: 'warning' })
+      notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
       setTimeout(() => router.push('/history-cases'), 1500)
     }
   } catch (e) {
@@ -248,7 +260,7 @@ const downloadReport = async () => {
   try {
     // 构建案件数据，用前端 state 中的数据直接生成报告
     const caseData = {
-      id: state.caseId || 'export',
+      id: currentCaseId() || 'export',
       title: state.form.accidentType ? `${state.form.accidentType}分析报告` : '交通事故分析报告',
       accident_type: state.form.accidentType || '待分析',
       location: state.form.location || '未填写',
@@ -274,7 +286,7 @@ const downloadReport = async () => {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `事故分析报告_${state.caseId || 'export'}_${new Date().toISOString().slice(0, 10)}.html`
+    link.download = `事故分析报告_${currentCaseId() || 'export'}_${new Date().toISOString().slice(0, 10)}.html`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)

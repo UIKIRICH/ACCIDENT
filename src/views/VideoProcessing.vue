@@ -177,22 +177,31 @@
 
 <script setup>
 import { onBeforeUnmount, ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { notify } from '../composables/useToast'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
+const route = useRoute()
 const {
   state,
   goStep,
   updateForm,
   updateAnalysis,
   setSelectedFrame,
-  completeVideoProcessing
+  completeVideoProcessing,
+  setCurrentCase
 } = useAccidentFlow()
 
 goStep('video-processing')
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
+// 进入页面时同步 caseId 到 store（防止刷新后丢失）
+if (route.query.caseId && String(route.query.caseId) !== String(state.caseId)) {
+  setCurrentCase(route.query.caseId)
+}
 
 // console.log('VideoProcessing.vue loaded successfully')
 // console.log('Current step:', state.step)
@@ -1007,7 +1016,7 @@ const runAnalysis = () => {
   })
 
   const nextRoute = completeVideoProcessing()
-  router.push(nextRoute)
+  router.push({ path: nextRoute, query: { caseId: currentCaseId() } })
 
   notify({
     title: '进入智能分析',
@@ -1940,9 +1949,3 @@ onBeforeUnmount(() => {
 }
 
 </style>
-
-
-
-
-
-

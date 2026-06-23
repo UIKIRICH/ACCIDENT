@@ -24,9 +24,19 @@
 <script setup>
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useAccidentFlow } from '../stores/useAccidentFlow'
 
 const router = useRouter()
 const route = useRoute()
+const { state } = useAccidentFlow()
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
+// 跳转时携带 caseId 的辅助函数
+const pushWithCase = (path) => {
+  const cid = currentCaseId()
+  router.push(cid ? { path, query: { caseId: cid } } : path)
+}
 
 const workflowRoutes = [
   { path: '/overview', name: '首页' },
@@ -63,13 +73,13 @@ const showNavButtons = computed(() => {
 
 const goPrev = () => {
   if (hasPrev.value) {
-    router.push(workflowRoutes[currentIndex.value - 1].path)
+    pushWithCase(workflowRoutes[currentIndex.value - 1].path)
   }
 }
 
 const goNext = () => {
   if (hasNext.value) {
-    router.push(workflowRoutes[currentIndex.value + 1].path)
+    pushWithCase(workflowRoutes[currentIndex.value + 1].path)
   }
 }
 </script>

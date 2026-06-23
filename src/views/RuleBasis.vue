@@ -292,10 +292,14 @@ const {
   initRuleLibrary,
   getRuleLibrary,
   selectRuleFromLibrary,
-  deselectRuleFromLibrary
+  deselectRuleFromLibrary,
+  setCurrentCase
 } = useAccidentFlow()
 
 goStep('rule-basis')
+
+// 统一获取 caseId：优先 URL query，fallback store
+const currentCaseId = () => route.query.caseId || state.caseId
 
 // 从后端加载命中规则
 const matchedRules = ref([])
@@ -303,8 +307,10 @@ const loadingRules = ref(false)
 const loadError = ref('')
 
 async function fetchMatchedRules() {
-  const caseId = route.query.caseId || state.caseId
+  const caseId = currentCaseId()
   if (!caseId) return
+  // 同步到 store（防止刷新后 store 丢失）
+  if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   loadingRules.value = true
   loadError.value = ''
   try {
@@ -503,7 +509,7 @@ function handleCompleteRuleBasis() {
   })
   
   const result = completeRuleBasis()
-  router.push(result)
+  router.push({ path: result, query: { caseId: currentCaseId() } })
   notify({ title: '规则依据确认', message: '规则依据已确认，进入人工复核页面' })
 }
 
