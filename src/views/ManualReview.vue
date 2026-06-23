@@ -335,13 +335,21 @@ const {
   getLogs,
   logMessage,
   LOG_LEVELS,
-  setCurrentCase
+  setCurrentCase,
+  getCurrentCase,
+  isValidCaseId
 } = useAccidentFlow()
 
 goStep('manual-review')
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
 
 const reviewNote = ref(state.manualReview.note || '')
 const editingLiabilities = ref([])
@@ -351,7 +359,7 @@ const submitting = ref(false)
 // 获取历史复核记录
 async function fetchReviews() {
   const caseId = currentCaseId()
-  if (!caseId) return
+  if (!isValidCaseId(caseId)) return
   // 同步到 store（防止刷新后 store 丢失）
   if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   try {

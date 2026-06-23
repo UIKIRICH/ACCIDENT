@@ -28,14 +28,20 @@ import { useAccidentFlow } from '../stores/useAccidentFlow'
 
 const router = useRouter()
 const route = useRoute()
-const { state } = useAccidentFlow()
+const { state, getCurrentCase, isValidCaseId } = useAccidentFlow()
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
-// 跳转时携带 caseId 的辅助函数
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
+// 跳转时携带 caseId 的辅助函数（仅在 caseId 有效时携带）
 const pushWithCase = (path) => {
   const cid = currentCaseId()
-  router.push(cid ? { path, query: { caseId: cid } } : path)
+  router.push(isValidCaseId(cid) ? { path, query: { caseId: cid } } : path)
 }
 
 const workflowRoutes = [

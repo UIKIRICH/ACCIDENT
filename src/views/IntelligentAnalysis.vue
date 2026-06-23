@@ -414,16 +414,31 @@ const {
   goStep,
   completeAnalysis,
   updateRecommendation,
-  setCurrentCase
+  setCurrentCase,
+  getCurrentCase,
+  isValidCaseId
 } = useAccidentFlow()
 
 goStep('analysis')
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+// 防止 undefined/null/"null"/"undefined" 等脏值传给后端
+const currentCaseId = () => {
+  // 1. 优先 URL query
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  // 2. fallback store + localStorage（getCurrentCase 内部已处理）
+  return getCurrentCase()
+}
 
 // 从后端加载案件详情
 async function loadCaseFromBackend(caseId) {
+  if (!isValidCaseId(caseId)) {
+    console.warn('[loadCaseFromBackend] 无效的 caseId:', caseId)
+    return
+  }
   try {
     const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
@@ -443,7 +458,7 @@ async function loadCaseFromBackend(caseId) {
 // 从后端加载案件责任结果
 async function loadCaseLiability() {
   const caseId = currentCaseId()
-  if (!caseId) return
+  if (!isValidCaseId(caseId)) return
   try {
     const result = await CasesAPI.getDetail(caseId)
     if (result.success && result.data) {
@@ -462,15 +477,26 @@ async function loadCaseLiability() {
 }
 
 onMounted(() => {
-  // 统一 caseId 来源：优先 URL query，fallback store
-  const caseIdFromQuery = route.query.caseId
-  if (caseIdFromQuery) {
-    // query 存在时，同步到 store 并加载案件详情
-    if (String(caseIdFromQuery) !== String(state.caseId)) {
-      setCurrentCase(caseIdFromQuery)
-      loadCaseFromBackend(caseIdFromQuery)
+  // 统一 caseId 来源：优先 URL query，fallback store/localStorage
+  const queryId = route.query.caseId
+  const storeId = getCurrentCase()
+
+  if (isValidCaseId(queryId)) {
+    // query 存在且有效：同步到 store 并加载案件详情
+    const qid = String(queryId).trim()
+    if (qid !== String(storeId)) {
+      setCurrentCase(qid)
+      loadCaseFromBackend(qid)
     }
+  } else if (isValidCaseId(storeId)) {
+    // query 缺失但 store/localStorage 有：补写 URL query，保证刷新后仍可恢复
+    console.warn('[IntelligentAnalysis] URL 缺少 caseId，已从 store 恢复:', storeId)
+    router.replace({ path: route.path, query: { ...route.query, caseId: storeId } })
+  } else {
+    // 完全没有 caseId：提示用户，避免后续操作传脏值给后端
+    console.warn('[IntelligentAnalysis] 未找到有效 caseId，请先创建或选择案件')
   }
+
   loadCaseLiability()
   loadConsistency()
 })
@@ -512,13 +538,22 @@ const ringStyle = computed(() => {
 
 async function loadConsistency() {
   const caseId = currentCaseId()
-  if (!caseId) return
+  if (!isValidCaseId(caseId)) return
   consistencyLoading.value = true
   consistencyError.value = ''
   try {
     const result = await CasesAPI.getEvidenceConsistency(caseId)
     if (result.success && result.data) {
       consistencyData.value = result.data
+      // 检测到证据冲突时提示用户
+      const conflictNum = result.data.conflict_items?.length || 0
+      if (conflictNum > 0) {
+        notify({
+          title: '检测到证据冲突',
+          message: `已发现 ${conflictNum} 项证据冲突，已降低可信度，建议进入人工复核`,
+          type: 'warning'
+        })
+      }
     } else {
       consistencyError.value = result.message || '检测失败'
     }
@@ -818,393 +853,24 @@ const parseMarkdown = (text) => {
 }
 
 const matchedRules = computed(() => {
-  // 优先使用Dify解析出的法规规则
+  // 仅使用 Dify 解析出的真实法规规则，无数据时返回空数组
   if (state.analysis.difyLegalRules && state.analysis.difyLegalRules.length > 0) {
     return state.analysis.difyLegalRules
   }
-  
-  // 否则使用默认的模拟数据
-  if (state.form.accidentType === '追尾事故') {
-    return [
-      { code: 'R-01', name: '道路交通安全法 第四十三条', content: '同车道行驶的机动车，后车应当与前车保持足以采取紧急制动措施的安全距离。', confidence: 92 },
-      { code: 'R-03', name: '安全距离规定', content: '同车道行驶应保持足以采取紧急制动措施的安全距离。', confidence: 88 },
-      { code: 'R-05', name: '制动不及时认定', content: '后车制动不及时导致碰撞，应承担相应责任。', confidence: 85 }
-    ]
-  } else if (state.form.accidentType === '变道碰撞') {
-    return [
-      { code: 'R-02', name: '道路交通安全法 第四十四条', content: '机动车变更车道时，应当提前开启转向灯，确认安全后再变更车道。', confidence: 90 },
-      { code: 'R-04', name: '变道规定', content: '变道时应提前开启转向灯，确认安全后再变道。', confidence: 86 },
-      { code: 'R-06', name: '观察义务', content: '驾驶员应保持观察，确保变道安全。', confidence: 83 }
-    ]
-  } else {
-    return [
-      { code: 'R-01', name: '道路交通安全法 第四十三条', content: '同车道行驶的机动车，后车应当与前车保持足以采取紧急制动措施的安全距离。', confidence: 92 },
-      { code: 'R-03', name: '安全距离规定', content: '同车道行驶应保持足以采取紧急制动措施的安全距离。', confidence: 88 },
-      { code: 'R-05', name: '制动不及时认定', content: '后车制动不及时导致碰撞，应承担相应责任。', confidence: 85 }
-    ]
-  }
+  return []
 })
 
 const vehicleLiabilities = computed(() => {
-  // 优先使用Dify解析出的真实责任数据
+  // 仅使用后端/Dify 返回的真实责任数据，无数据时返回空数组
   if (state.analysis.vehicleLiabilities && state.analysis.vehicleLiabilities.length > 0) {
     return state.analysis.vehicleLiabilities
   }
-  
-  const vehicles = state.form.vehicles || []
-  const accidentType = state.form.accidentType
-  
-  if (vehicles.length === 0) return []
-  
-  let liabilities = []
-  
-  if (accidentType === '追尾事故') {
-    // 追尾事故责任分配
-    if (vehicles.length === 2) {
-      // 2辆车：后车主责100%，前车无责
-      vehicles.forEach((vehicle, index) => {
-        if (index === 1) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 100
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '无责',
-            percentage: 0
-          })
-        }
-      })
-    } else if (vehicles.length === 3) {
-      // 3辆车：最后一辆主责70%，中间车次责30%，第一辆无责
-      vehicles.forEach((vehicle, index) => {
-        if (index === 2) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 70
-          })
-        } else if (index === 1) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 30
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '无责',
-            percentage: 0
-          })
-        }
-      })
-    } else if (vehicles.length >= 4) {
-      // 4辆车及以上：最后一辆主责60%，倒数第二车次责25%，倒数第三车次责15%，其他无责
-      vehicles.forEach((vehicle, index) => {
-        if (index === vehicles.length - 1) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 60
-          })
-        } else if (index === vehicles.length - 2) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 25
-          })
-        } else if (index === vehicles.length - 3) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 15
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '无责',
-            percentage: 0
-          })
-        }
-      })
-    }
-  } else if (accidentType === '变道碰撞') {
-    // 变道碰撞责任分配
-    if (vehicles.length === 2) {
-      // 2辆车：变道车辆主责70%，直行车辆次责30%
-      vehicles.forEach((vehicle, index) => {
-        if (vehicle.role === '变道车辆' || index === 0) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 70
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 30
-          })
-        }
-      })
-    } else if (vehicles.length === 3) {
-      // 3辆车：变道车辆主责60%，第一辆直行车次责25%，第二辆直行车次责15%
-      let hasFoundChanging = false
-      vehicles.forEach((vehicle, index) => {
-        if (vehicle.role === '变道车辆' || (index === 0 && !hasFoundChanging)) {
-          hasFoundChanging = true
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 60
-          })
-        } else if (index === 1 && !hasFoundChanging) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 60
-          })
-        } else {
-          const previousLiability = liabilities.find(l => l.key !== vehicle.key)
-          const isFirstStraight = !liabilities.some(l => l.liability === '次责')
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: isFirstStraight ? 25 : 15
-          })
-        }
-      })
-    } else if (vehicles.length >= 4) {
-      // 4辆车及以上：变道车辆主责50%，其他车辆按比例分责
-      let hasFoundChanging = false
-      const changingIndex = vehicles.findIndex(v => v.role === '变道车辆')
-      const remainingPercentage = 50
-      const otherVehicleCount = vehicles.length - 1
-      
-      vehicles.forEach((vehicle, index) => {
-        if (vehicle.role === '变道车辆' || (changingIndex === -1 && index === 0)) {
-          hasFoundChanging = true
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 50
-          })
-        } else {
-          let percentage = 0
-          if (index === 1) {
-            percentage = 20
-          } else if (index === 2) {
-            percentage = 15
-          } else {
-            percentage = 15 / (otherVehicleCount - 2)
-          }
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: Math.round(percentage)
-          })
-        }
-      })
-    }
-  } else {
-    // 其他事故类型：按车辆数量进行责任分配
-    if (vehicles.length === 2) {
-      // 2辆车：主责80%，次责20%
-      vehicles.forEach((vehicle, index) => {
-        if (index === 0) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 80
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 20
-          })
-        }
-      })
-    } else if (vehicles.length === 3) {
-      // 3辆车：主责60%，次责30%，次责10%
-      vehicles.forEach((vehicle, index) => {
-        if (index === 0) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 60
-          })
-        } else if (index === 1) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 30
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 10
-          })
-        }
-      })
-    } else if (vehicles.length >= 4) {
-      // 4辆车及以上：主责50%，次责30%，次责15%，次责5%
-      vehicles.forEach((vehicle, index) => {
-        if (index === 0) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '主责',
-            percentage: 50
-          })
-        } else if (index === 1) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 30
-          })
-        } else if (index === 2) {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 15
-          })
-        } else {
-          liabilities.push({
-            key: vehicle.key,
-            vehicleType: vehicle.vehicleType,
-            plate: vehicle.plate,
-            role: vehicle.role,
-            liability: '次责',
-            percentage: 5
-          })
-        }
-      })
-    }
-  }
-  
-  // 验证百分比总和是否为100%，如果不是则调整
-  let totalPercentage = liabilities.reduce((sum, l) => sum + l.percentage, 0)
-  if (totalPercentage !== 100 && liabilities.length > 0) {
-    const difference = 100 - totalPercentage
-    liabilities[0].percentage += difference
-  }
-  
-  return liabilities
+  return []
 })
 
 const reasoningText = computed(() => {
-  // 优先使用Dify解析出的真实理由
-  if (state.analysis.reasoningText) {
-    return state.analysis.reasoningText
-  }
-  
-  const accidentType = state.form.accidentType
-  const confidence = state.analysis.confidence
-  const rules = matchedRules.value
-  const liabilities = vehicleLiabilities.value
-  
-  let reasoning = ''
-  const liabilityText = liabilities.map(l => `${l.role || l.vehicleType}${l.plate ? '(' + l.plate + ')' : ''}：${l.liability}(${l.percentage}%)`).join('，')
-  
-  if (accidentType === '追尾事故') {
-    reasoning = `经分析，该事故为追尾事故。责任分配：${liabilityText}。`
-    if (rules.length > 0) {
-      reasoning += `依据${rules.map(r => r.name).join('、')}等规则，`
-    }
-    reasoning += `根据《道路交通安全法》第四十三条规定，同车道行驶的机动车，后车应当与前车保持足以采取紧急制动措施的安全距离。`
-    reasoning += `本次分析置信度为${confidence}%，证据完整度为${state.analysis.evidenceIntegrity}%。`
-  } else if (accidentType === '变道碰撞') {
-    reasoning = `经分析，该事故为变道碰撞事故。责任分配：${liabilityText}。`
-    if (rules.length > 0) {
-      reasoning += `依据${rules.map(r => r.name).join('、')}等规则，`
-    }
-    reasoning += `根据《道路交通安全法》第四十四条规定，机动车变更车道时，应当提前开启转向灯，确认安全后再变更车道。`
-    reasoning += `本次分析置信度为${confidence}%，证据完整度为${state.analysis.evidenceIntegrity}%。`
-  } else {
-    reasoning = `经分析，该事故涉及交通违规行为。责任分配：${liabilityText}。`
-    if (rules.length > 0) {
-      reasoning += `依据${rules.map(r => r.name).join('、')}等规则，`
-    }
-    reasoning += `根据《道路交通安全法》相关规定，驾驶员应遵守交通规则，确保行车安全。`
-    reasoning += `本次分析置信度为${confidence}%，证据完整度为${state.analysis.evidenceIntegrity}%。`
-  }
-  
-  return reasoning
+  // 仅使用 Dify 解析出的真实推理文本，无数据时返回空字符串
+  return state.analysis.reasoningText || ''
 })
 
 const isAnalyzing = ref(false)
@@ -1212,45 +878,74 @@ const analysisProgress = ref(0)
 
 const refreshAnalysis = async () => {
   if (isAnalyzing.value) return
-  
+
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) {
+    notify({
+      title: '无法重新分析',
+      message: '未检测到有效案件编号，请先从案件列表选择案件或重新进入流程',
+      type: 'warning'
+    })
+    return
+  }
+
   isAnalyzing.value = true
   analysisProgress.value = 0
-  
-  notify({ title: '开始分析', message: '正在重新分析事故数据...', type: 'info' })
-  
-  const steps = [
-    { progress: 20, message: '正在提取视频关键帧...' },
-    { progress: 40, message: '正在识别事故类型...' },
-    { progress: 60, message: '正在匹配责任规则...' },
-    { progress: 80, message: '正在生成分析报告...' },
-    { progress: 100, message: '分析完成！' }
-  ]
-  
-  for (const step of steps) {
-    await new Promise(resolve => setTimeout(resolve, 500))
-    analysisProgress.value = step.progress
-    notify({ title: '分析进度', message: step.message, type: 'info' })
+
+  notify({ title: '开始分析', message: '正在从后端重新加载事故分析数据...', type: 'info' })
+
+  try {
+    analysisProgress.value = 30
+    // 重新加载案件详情与责任结果（真实数据，非随机生成）
+    await loadCaseFromBackend(caseId)
+    analysisProgress.value = 60
+    await loadCaseLiability()
+    analysisProgress.value = 90
+    await loadConsistency()
+    analysisProgress.value = 100
+
+    if (!hasAnalysis.value) {
+      notify({
+        title: '暂无分析数据',
+        message: '当前案件尚未生成分析结果，请先在「视频处理」页面完成关键帧提取与 Dify 分析。',
+        type: 'warning'
+      })
+    } else {
+      notify({
+        title: '分析数据已刷新',
+        message: `置信度: ${state.analysis.confidence}% | 证据完整度: ${state.analysis.evidenceIntegrity}%`,
+        type: 'success'
+      })
+    }
+  } catch (err) {
+    console.error('[refreshAnalysis] 加载失败:', err)
+    notify({
+      title: '加载失败',
+      message: err.message || '无法从后端加载分析数据，请稍后重试',
+      type: 'error'
+    })
+  } finally {
+    isAnalyzing.value = false
+    analysisProgress.value = 0
   }
-  
-  state.analysis.confidence = Math.floor(Math.random() * 10) + 90
-  state.analysis.evidenceIntegrity = Math.floor(Math.random() * 10) + 90
-  state.analysis.vehicleLiabilities = vehicleLiabilities.value
-  
-  await new Promise(resolve => setTimeout(resolve, 300))
-  
-  isAnalyzing.value = false
-  analysisProgress.value = 0
-  
-  notify({ 
-    title: '分析完成', 
-    message: `置信度: ${state.analysis.confidence}% | 证据完整度: ${state.analysis.evidenceIntegrity}%`, 
-    type: 'success' 
-  })
 }
 const isSaving = ref(false)
 
 const confirmAnalysis = async () => {
   if (isSaving.value) return
+
+  // 校验 caseId，阻止无效值（null/undefined/"null"）传给后端
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) {
+    console.error('[confirmAnalysis] 无效的 caseId:', caseId)
+    notify({
+      title: '无法保存',
+      message: '未检测到有效案件编号，请先从案件列表选择案件或重新进入流程',
+      type: 'warning'
+    })
+    return
+  }
+
   isSaving.value = true
   try {
     const payload = {
@@ -1269,8 +964,8 @@ const confirmAnalysis = async () => {
         confidence: r.confidence,
       })),
     }
-    console.log('[confirmAnalysis] Saving liability:', payload)
-    const result = await CasesAPI.saveLiability(currentCaseId(), payload)
+    console.log('[confirmAnalysis] Saving liability for caseId:', caseId, payload)
+    const result = await CasesAPI.saveLiability(caseId, payload)
     console.log('[confirmAnalysis] Result:', result)
     if (result.success) {
       // 标记分析步骤完成

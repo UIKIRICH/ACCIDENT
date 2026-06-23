@@ -243,11 +243,17 @@ import { CasesAPI } from '../api/index.js'
 
 const router = useRouter()
 const route = useRoute()
-const { state, updateForm, completeIntake, goStep, setCurrentCase } = useAccidentFlow()
+const { state, updateForm, completeIntake, goStep, setCurrentCase, getCurrentCase, isValidCaseId } = useAccidentFlow()
 const submitting = ref(false)
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
 
 const workflowRoutes = [
   { path: '/overview', name: '首页' },
@@ -282,7 +288,7 @@ const goPrev = () => {
   if (hasPrev.value) {
     const cid = currentCaseId()
     const path = workflowRoutes[currentIndex.value - 1].path
-    router.push(cid ? { path, query: { caseId: cid } } : path)
+    router.push(isValidCaseId(cid) ? { path, query: { caseId: cid } } : path)
   }
 }
 
@@ -290,7 +296,7 @@ const goNext = () => {
   if (hasNext.value) {
     const cid = currentCaseId()
     const path = workflowRoutes[currentIndex.value + 1].path
-    router.push(cid ? { path, query: { caseId: cid } } : path)
+    router.push(isValidCaseId(cid) ? { path, query: { caseId: cid } } : path)
   }
 }
 

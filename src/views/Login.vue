@@ -50,6 +50,19 @@
 
     <!-- 右侧登录区域 -->
     <main class="login-main">
+      <!-- 移动端专用顶部标题（仅手机显示） -->
+      <div class="mobile-header">
+        <div class="mobile-logo">
+          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <path d="M32 4L8 14v18c0 16 10 26 24 28 14-2 24-12 24-28V14L32 4z" stroke="#007AFF" stroke-width="2.5" fill="rgba(0,122,255,0.08)"/>
+            <circle cx="32" cy="23" r="9" stroke="#007AFF" stroke-width="2.5" fill="rgba(0,122,255,0.06)"/>
+            <path d="M23 39l5.5-9h7l5.5 9" stroke="#007AFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <h1 class="mobile-title">交通事故智能处理平台</h1>
+        <p class="mobile-subtitle">现场采证端</p>
+      </div>
+
       <div class="login-card">
         <!-- 头部 -->
         <div class="card-head">
@@ -237,7 +250,11 @@ const handleLogin = async () => {
         localStorage.removeItem('accident-platform-remembered-user')
       }
       window.dispatchEvent(new CustomEvent('auth-change', { detail: { loggedIn: true } }))
-      router.push('/overview')
+      // 根据设备类型跳转：移动端去采证页，桌面端去总览
+      const ua = navigator.userAgent || ''
+      const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile/i.test(ua)
+        || (window.innerWidth <= 768 && 'ontouchstart' in window)
+      router.push(isMobile ? '/mobile-capture' : '/overview')
       notify({ title: '登录成功', message: `欢迎回来，${result.data.user.display_name || form.username}`, type: 'success' })
     } else {
       generalError.value = result.message || '登录失败，请检查用户名或密码'
@@ -947,6 +964,10 @@ const handleRegister = () => notify({ title: '提示', message: '请联系系统
 /* ============================================================
    响应式
    ============================================================ */
+
+/* 移动端专用顶部标题：默认隐藏，900px 以下显示 */
+.mobile-header { display: none; }
+
 @media (max-width: 900px) {
   .login-brand { display: none; }
   .login-main {
@@ -954,14 +975,57 @@ const handleRegister = () => notify({ title: '提示', message: '请联系系统
     padding: var(--space-8) var(--space-6);
   }
   .login-card { max-width: 440px; }
+
+  /* 移动端显示顶部标题 */
+  .mobile-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 32px;
+  }
+  .mobile-logo {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 12px;
+  }
+  .mobile-logo svg { width: 100%; height: 100%; }
+  .mobile-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary, #1c1c1e);
+    margin: 0 0 4px;
+    text-align: center;
+  }
+  .mobile-subtitle {
+    font-size: 14px;
+    color: #007AFF;
+    font-weight: 500;
+    margin: 0;
+  }
 }
 
 @media (max-width: 480px) {
-  .login-main { padding: var(--space-6) var(--space-5); }
+  .login-main {
+    padding: 40px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .login-card { max-width: 100%; }
   .card-head { margin-bottom: var(--space-6); }
   .card-title { font-size: var(--text-2xl); }
   .field-input { padding: 0 12px; }
-  .field-input input { padding: 11px 0; }
+  .field-input input { padding: 13px 0; font-size: 16px; /* 防止 iOS 缩放 */ }
+  .submit-btn {
+    height: 48px; /* 触摸友好 */
+    font-size: 16px;
+  }
   .social-btn { width: 44px; height: 44px; }
+
+  /* 移动端顶部标题优化 */
+  .mobile-header { margin-bottom: 28px; }
+  .mobile-logo { width: 56px; height: 56px; }
+  .mobile-title { font-size: 18px; }
+  .mobile-subtitle { font-size: 13px; }
 }
 </style>

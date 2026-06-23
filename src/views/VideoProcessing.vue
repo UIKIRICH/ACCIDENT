@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="video-processing-page">
     <div class="page-header">
       <div class="header-content">
@@ -191,15 +191,23 @@ const {
   updateAnalysis,
   setSelectedFrame,
   completeVideoProcessing,
-  setCurrentCase
+  setCurrentCase,
+  getCurrentCase,
+  isValidCaseId
 } = useAccidentFlow()
 
 goStep('video-processing')
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
 // 进入页面时同步 caseId 到 store（防止刷新后丢失）
-if (route.query.caseId && String(route.query.caseId) !== String(state.caseId)) {
+if (isValidCaseId(route.query.caseId) && String(route.query.caseId) !== String(state.caseId)) {
   setCurrentCase(route.query.caseId)
 }
 
@@ -299,49 +307,12 @@ const imageEvidenceDecision = computed(() => {
 
 const liabilitySuggestion = computed(() => {
   const accidentType = accidentTypeText.value
-  const consistency = imageEvidenceConsistencyText.value
-  
   if (!accidentType || accidentType === '待分析') {
     return '请先上传视频并进行分析，系统将根据事故类型和证据情况给出责任建议。'
   }
-  
-  if (accidentType.includes('追尾')) {
-    if (consistency.includes('基本一致')) {
-      return '根据视频和图片证据，后车未保持安全车距，建议后车承担主要责任。'
-    } else if (consistency.includes('部分一致')) {
-      return '视频与图片证据存在部分差异，建议后车承担主要责任，前车承担次要责任。'
-    } else {
-      return '证据存在矛盾，建议进一步调查或由交警认定责任。'
-    }
-  }
-  
-  if (accidentType.includes('变道')) {
-    if (consistency.includes('基本一致')) {
-      return '变道车辆未确保安全，建议变道车辆承担全部责任。'
-    } else {
-      return '建议变道车辆承担主要责任，直行车辆承担次要责任。'
-    }
-  }
-  
-  if (accidentType.includes('转弯')) {
-    return '转弯车辆应让直行车辆先行，建议转弯车辆承担主要责任。'
-  }
-  
-  return '建议根据现场具体情况，由交警部门进行责任认定。'
+  // 责任建议应由后端/Dify 分析给出，此处仅提示用户前往智能分析页面查看
+  return '已完成视频分析，请前往「智能分析」页面查看详细责任判定与法规依据。'
 })
-
-const defaultFrames = [1, 2, 3, 4].map((n, i) => ({
-  id: `default-${n}`,
-  label: `关键帧${n}`,
-  time: 30 + i * 4,
-  timeText: `00:00:${String(30 + i * 4).padStart(2, '0')}`,
-  image: buildPlaceholderImage(`Frame ${n}`, 'square'),
-  qualityScore: 90 - i * 3,
-  clarity: i < 2 ? '清晰' : '较清晰',
-  purpose: i === 0 ? '主分析帧' : '辅助证据',
-  stage: i === 0 ? 'impact' : 'supplement',
-  isMain: i === 0
-}))
 
 const frames = computed({
   get() {
@@ -513,7 +484,16 @@ const initializeVideo = () => {
       message: state.form.videoFileName || state.form.fileName
     })
   } else if (state.form.videoFileName) {
-    mockUploadVideo()
+    // 仅有文件名而无实际文件对象时，仅展示文件名，不伪造视频文件
+    videoMeta.value = {
+      name: state.form.videoFileName,
+      size: 0
+    }
+    notify({
+      title: '视频文件缺失',
+      message: '检测到历史文件名，但视频文件未保留，请重新上传视频。',
+      type: 'warning'
+    })
   }
 }
 
@@ -541,7 +521,7 @@ const handleFile = (e) => {
   })
 
   resetFrameState()
-  frames.value = defaultFrames
+  frames.value = []
 
   notify({
     title: '视频已加载',
@@ -549,101 +529,14 @@ const handleFile = (e) => {
   })
 }
 
-// 模拟视频上传，用于测试
-const mockUploadVideo = () => {
-  const mockFile = new File(['mock video data'], 'accident_video.mp4', { type: 'video/mp4' })
-  uploadedFile.value = mockFile
-
-  // 这里只是占位图；真实分析还是走后端
-  videoUrl.value = ''
-
-  videoMeta.value = {
-    name: 'accident_video.mp4',
-    size: 1024 * 1024 * 10
-  }
-
-  updateForm({
-    fileName: 'accident_video.mp4',
-    fileType: 'video',
-    fileSize: '10.00 MB',
-    videoFileName: 'accident_video.mp4',
-    videoFile: mockFile
-  })
-
-  resetFrameState()
-  frames.value = defaultFrames
-
-  notify({
-    title: '视频已加载',
-    message: 'accident_video.mp4'
-  })
-}
-
 const extractFrames = async () => {
   extractionAttempted.value = true
   if (!uploadedFile.value) {
     notify({
-      title: '使用模拟数据',
-      message: '未检测到上传的视频文件，使用模拟数据进行关键帧提取测试。',
-      type: 'info'
+      title: '请先上传视频',
+      message: '未检测到视频文件，请先上传视频后再进行关键帧提取。',
+      type: 'warning'
     })
-
-    extracting.value = true
-
-    try {
-      const mockData = {
-        impact_time: 3,
-        vehicle_count: 2,
-        keyframes: [
-          {
-            time: '1',
-            thumb_url: buildPlaceholderImage('Frame 1', 'square'),
-            stage: 'pre',
-            purpose: '事故前状态',
-            is_main: false,
-            score: 0.72
-          },
-          {
-            time: '3',
-            thumb_url: buildPlaceholderImage('Frame 2', 'square'),
-            stage: 'impact',
-            purpose: '主分析帧',
-            is_main: true,
-            score: 0.95
-          },
-          {
-            time: '5',
-            thumb_url: buildPlaceholderImage('Frame 3', 'square'),
-            stage: 'post',
-            purpose: '事故后状态',
-            is_main: false,
-            score: 0.83
-          },
-          {
-            time: '7',
-            thumb_url: buildPlaceholderImage('Frame 4', 'square'),
-            stage: 'evidence',
-            purpose: '辅助证据',
-            is_main: false,
-            score: 0.70
-          }
-        ]
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      processKeyframeData(mockData)
-    } catch (error) {
-      const message = error?.name === 'AbortError'
-        ? '关键帧提取超时（120秒），请检查后端是否卡在视频解码或模型加载。'
-        : (error?.message || '未知错误')
-      notify({
-        title: '关键帧提取失败',
-        message: `请检查后端是否已启动，或稍后重试。错误信息：${message}`,
-        type: 'error'
-      })
-    } finally {
-      extracting.value = false
-    }
     return
   }
 

@@ -131,10 +131,16 @@ import { CasesAPI } from '../api/index.js'
 
 const router = useRouter()
 const route = useRoute()
-const { state, setCurrentCase } = useAccidentFlow()
+const { state, setCurrentCase, getCurrentCase, isValidCaseId } = useAccidentFlow()
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
 
 const goBack = () => {
   router.back()
@@ -142,7 +148,7 @@ const goBack = () => {
 
 async function loadCaseLiability() {
   const caseId = currentCaseId()
-  if (!caseId) {
+  if (!isValidCaseId(caseId)) {
     notify({ title: '无案件', message: '未指定案件，请从历史案例选择', type: 'warning' })
     setTimeout(() => router.push('/history-cases'), 1500)
     return

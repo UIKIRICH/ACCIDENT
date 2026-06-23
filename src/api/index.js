@@ -1,11 +1,94 @@
 // API接口层 - 统一管理所有接口请求
 // 使用真实后端API，通过HTTP请求与FastAPI后端通信
 
+import { notify } from '../composables/useToast.js'
+
 const API_BASE = '';   // 强制为空
 
 // 存储token和用户信息
 let authToken = localStorage.getItem('auth-token') || ''
 let currentUser = null
+
+// 失败兜底提示防抖标记（避免同类错误短时间内重复弹窗）
+let lastErrorNotifyTime = 0
+const ERROR_NOTIFY_DEBOUNCE = 2000  // 2 秒防抖
+
+// 友好错误提示：根据错误码和错误信息匹配 6 类异常场景
+function showFriendlyError(status, detail, path) {
+  const now = Date.now()
+  if (now - lastErrorNotifyTime < ERROR_NOTIFY_DEBOUNCE) return
+  lastErrorNotifyTime = now
+
+  const msg = String(detail || '').toLowerCase()
+  const p = String(path || '').toLowerCase()
+
+  // 1. Dify 不可用（502/504/500 + dify 关键字）
+  if ((status === 502 || status === 504) || (status === 500 && msg.includes('dify'))) {
+    notify({
+      title: 'AI 分析服务异常',
+      message: 'AI 分析服务暂时不可用，已转人工复核流程',
+      type: 'warning'
+    })
+    return
+  }
+
+  // 2. 图片模型不可用（500 + image evidence 关键字）
+  if (status === 500 && (msg.includes('image evidence') || msg.includes('image_evidence') || p.includes('analyze_image'))) {
+    notify({
+      title: '图片识别服务异常',
+      message: '图片识别服务异常，请稍后重试',
+      type: 'warning'
+    })
+    return
+  }
+
+  // 3. 证据冲突（接口返回冲突信息，由页面处理，此处不拦截）
+  // 证据冲突通过 evidence-consistency 接口返回的 conflicts 字段处理，非错误码
+
+  // 4. 报告导出失败（500 + report 关键字，或 404 + report）
+  if ((status === 500 || status === 404) && (p.includes('report') || msg.includes('report'))) {
+    notify({
+      title: '报告生成失败',
+      message: '报告生成失败，可重新生成或稍后重试',
+      type: 'error'
+    })
+    return
+  }
+
+  // 5. 非法状态跳转（400 + 状态相关关键字）
+  if (status === 400 && (msg.includes('status') || msg.includes('state') || msg.includes('状态') || msg.includes('不允许'))) {
+    notify({
+      title: '操作无效',
+      message: '案件当前状态不允许此操作，请按正确流程处理',
+      type: 'warning'
+    })
+    return
+  }
+
+  // 6. 规则未命中（matched-rules 返回空，非错误码，由页面处理）
+  // 规则未命中通过空数组返回，由页面显示"未匹配到规则，建议人工复核"
+
+  // 7. 通用错误提示（兜底）
+  if (status === 404) {
+    notify({
+      title: '资源不存在',
+      message: '请求的资源不存在，可能已被删除',
+      type: 'warning'
+    })
+  } else if (status === 500) {
+    notify({
+      title: '服务器错误',
+      message: '服务器内部错误，请稍后重试',
+      type: 'error'
+    })
+  } else if (status === 503) {
+    notify({
+      title: '服务不可用',
+      message: '服务暂时不可用，请稍后重试',
+      type: 'warning'
+    })
+  }
+}
 
 // 设置认证信息
 export function setAuthToken(token) {
@@ -68,6 +151,20 @@ async function request(method, path, body = null) {
       const errData = await response.json()
       errorDetail = errData.detail || errData.message || errorDetail
     } catch { }
+
+    // 401 未授权：token 过期或无效，清除登录态并跳转登录页
+    if (response.status === 401) {
+      setAuthToken('')
+      setCurrentUser(null)
+      // 通知 App.vue 显示提示并跳转登录页（避免在 API 层直接操作路由）
+      window.dispatchEvent(new CustomEvent('auth-expired', {
+        detail: { reason: errorDetail }
+      }))
+    } else {
+      // 其他错误：显示友好提示（6 类异常场景 + 通用兜底）
+      showFriendlyError(response.status, errorDetail, path)
+    }
+
     throw new Error(errorDetail)
   }
 
@@ -100,6 +197,19 @@ async function uploadFile(path, file, extraFields = {}) {
       const errData = await response.json()
       errorDetail = errData.detail || errData.message || errorDetail
     } catch { }
+
+    // 401 未授权：token 过期或无效，清除登录态并跳转登录页
+    if (response.status === 401) {
+      setAuthToken('')
+      setCurrentUser(null)
+      window.dispatchEvent(new CustomEvent('auth-expired', {
+        detail: { reason: errorDetail }
+      }))
+    } else {
+      // 其他错误：显示友好提示
+      showFriendlyError(response.status, errorDetail, path)
+    }
+
     throw new Error(errorDetail)
   }
 

@@ -208,7 +208,7 @@
           <p class="empty-text" style="color:#ef4444;">加载失败: {{ loadError }}</p>
         </div>
         <div v-else-if="matchedRules.length === 0" class="empty-state">
-          <p class="empty-text">暂无命中规则</p>
+          <p class="empty-text">未匹配到规则，建议人工复核</p>
         </div>
         <div v-else class="rules-grid">
           <div v-for="(rule, idx) in matchedRules" :key="rule.match_id || idx" class="rule-card selected">
@@ -293,13 +293,21 @@ const {
   getRuleLibrary,
   selectRuleFromLibrary,
   deselectRuleFromLibrary,
-  setCurrentCase
+  setCurrentCase,
+  getCurrentCase,
+  isValidCaseId
 } = useAccidentFlow()
 
 goStep('rule-basis')
 
-// 统一获取 caseId：优先 URL query，fallback store
-const currentCaseId = () => route.query.caseId || state.caseId
+// 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
+const currentCaseId = () => {
+  const queryId = route.query.caseId
+  if (isValidCaseId(queryId)) {
+    return String(queryId).trim()
+  }
+  return getCurrentCase()
+}
 
 // 从后端加载命中规则
 const matchedRules = ref([])
@@ -308,7 +316,7 @@ const loadError = ref('')
 
 async function fetchMatchedRules() {
   const caseId = currentCaseId()
-  if (!caseId) return
+  if (!isValidCaseId(caseId)) return
   // 同步到 store（防止刷新后 store 丢失）
   if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   loadingRules.value = true

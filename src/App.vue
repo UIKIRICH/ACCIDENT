@@ -80,6 +80,15 @@ const convertToKebabCase = (str) => {
   if (str === 'reviewPriority') {
     return 'review-priority'
   }
+  if (str === 'evidenceChain') {
+    return 'evidence-chain'
+  }
+  if (str === 'accidentTimeline') {
+    return 'accident-timeline'
+  }
+  if (str === 'ruleGraph') {
+    return 'rule-graph'
+  }
   return str.replace(/([a-z0-9]|(?=[A-Z]))([A-Z])/g, '$1-$2').toLowerCase()
 }
 
@@ -89,6 +98,15 @@ const convertToCamelCase = (str) => {
   }
   if (str === 'review-priority') {
     return 'reviewPriority'
+  }
+  if (str === 'evidence-chain') {
+    return 'evidenceChain'
+  }
+  if (str === 'accident-timeline') {
+    return 'accidentTimeline'
+  }
+  if (str === 'rule-graph') {
+    return 'ruleGraph'
   }
   return str.replace(/-([a-z])/g, (g) => g[1].toUpperCase())
 }
@@ -118,6 +136,24 @@ const removeToast = (id) => {
 
 const toastHandler = (event) => showToast(event.detail)
 
+// 防止多个 API 同时 401 时重复弹窗和跳转
+let authExpiredHandled = false
+const authExpiredHandler = (event) => {
+  if (authExpiredHandled) return
+  authExpiredHandled = true
+  isLoggedIn.value = false
+  showToast({
+    title: '登录已过期',
+    message: '您的登录状态已失效，请重新登录',
+    type: 'warning'
+  })
+  if (route.path !== '/login') {
+    router.push('/login')
+  }
+  // 3 秒后重置标记，允许下次过期检测
+  setTimeout(() => { authExpiredHandled = false }, 3000)
+}
+
 watch(() => route.path, (newPath) => {
   syncLoginState()
   const pageKey = newPath.replace('/', '')
@@ -131,6 +167,7 @@ watch(() => route.path, (newPath) => {
 onMounted(() => {
   document.documentElement.setAttribute('data-theme', theme.value)
   window.addEventListener('app-toast', toastHandler)
+  window.addEventListener('auth-expired', authExpiredHandler)
   syncLoginState()
 
   // 检查并清除无效的 caseId 缓存
@@ -170,6 +207,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('app-toast', toastHandler)
+  window.removeEventListener('auth-expired', authExpiredHandler)
 })
 </script>
 

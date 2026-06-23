@@ -552,9 +552,20 @@ const state = reactive(initialState())
   })()
 
 // ── caseId 统一管理 API ──
+// 无效的 caseId 值集合（防止 "null"/"undefined" 字符串污染后端）
+const INVALID_CASE_ID_VALUES = new Set([null, undefined, '', 'null', 'undefined', 'NaN'])
+
+// 校验 caseId 是否为有效值
+function isValidCaseId(caseId) {
+  if (caseId === null || caseId === undefined) return false
+  const str = String(caseId).trim()
+  return str !== '' && !INVALID_CASE_ID_VALUES.has(str)
+}
+
 // 设置当前案件 ID（来源：后端创建案件返回 / 历史案件恢复 / URL query）
 function setCurrentCase(caseId) {
-  const id = caseId ? String(caseId).trim() : null
+  // 过滤无效值，防止 "null"/"undefined" 字符串污染
+  const id = isValidCaseId(caseId) ? String(caseId).trim() : null
   state.caseId = id
   try {
     if (id) {
@@ -568,12 +579,16 @@ function setCurrentCase(caseId) {
   logMessage(LOG_LEVELS.INFO, 'SYSTEM', 'SET_CURRENT_CASE', `当前案件 ID 设为 ${id || 'null'}`)
 }
 
-// 获取当前案件 ID（优先 state，fallback localStorage）
+// 获取当前案件 ID（优先 state，fallback localStorage），自动过滤无效值
 function getCurrentCase() {
-  if (state.caseId) return state.caseId
+  // 1. 优先从 state 获取
+  if (isValidCaseId(state.caseId)) {
+    return state.caseId
+  }
+  // 2. fallback localStorage
   try {
     const saved = localStorage.getItem(CURRENT_CASE_STORAGE_KEY)
-    if (saved && saved.trim()) {
+    if (isValidCaseId(saved)) {
       state.caseId = saved.trim()
       return state.caseId
     }
@@ -1089,6 +1104,7 @@ export function useAccidentFlow() {
     // caseId 统一管理
     setCurrentCase,
     getCurrentCase,
+    isValidCaseId,
     updateForm,
     updateAnalysis,
     updateRecommendation,

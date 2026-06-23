@@ -17,6 +17,11 @@ const routes = [
     component: () => import('../views/Overview.vue')
   },
   {
+    path: '/dashboard',
+    name: 'DashboardScreen',
+    component: () => import('../views/DashboardScreen.vue')
+  },
+  {
     path: '/accident-entry',
     name: 'AccidentEntry',
     component: () => import('../views/AccidentEntry.vue')
@@ -62,6 +67,21 @@ const routes = [
     component: () => import('../views/HistoryCases.vue')
   },
   {
+    path: '/accident-timeline',
+    name: 'AccidentTimeline',
+    component: () => import('../views/AccidentTimeline.vue')
+  },
+  {
+    path: '/evidence-chain',
+    name: 'EvidenceChain',
+    component: () => import('../views/EvidenceChain.vue')
+  },
+  {
+    path: '/rule-graph',
+    name: 'RuleGraph',
+    component: () => import('../views/RuleGraph.vue')
+  },
+  {
     path: '/rule-library',
     name: 'RuleLibrary',
     component: () => import('../views/RuleLibrary.vue')
@@ -80,6 +100,12 @@ const routes = [
     path: '/test',
     name: 'Test',
     component: () => import('../views/TestPage.vue')
+  },
+  {
+    path: '/mobile-capture',
+    name: 'MobileCapture',
+    component: () => import('../views/MobileCapture.vue'),
+    meta: { standalone: true }
   }
 ]
 
@@ -88,16 +114,38 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to, from, next) => {
+// 移动端设备检测：通过 User-Agent 判断
+const isMobileDevice = () => {
+  const ua = navigator.userAgent || navigator.vendor || window.opera
+  return /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile/i.test(ua)
+    || (window.innerWidth <= 768 && 'ontouchstart' in window)
+}
+
+// 移动端允许访问的路径（独立页面，不重定向）
+const MOBILE_ALLOWED_PATHS = ['/mobile-capture', '/login']
+
+router.beforeEach((to, from) => {
   const token = localStorage.getItem('auth-token')
 
+  // 认证检查
   if (to.path !== '/login' && !token) {
-    next('/login')
+    return '/login'
   } else if (to.path === '/login' && token) {
-    next('/overview')
-  } else {
-    next()
+    // 已登录用户访问登录页：移动端去采证页，桌面端去总览
+    return isMobileDevice() ? '/mobile-capture' : '/overview'
   }
+
+  // 双端分离：移动端访问桌面页面时，自动重定向到移动端采证页
+  if (token && isMobileDevice() && !MOBILE_ALLOWED_PATHS.includes(to.path)) {
+    return '/mobile-capture'
+  }
+
+  // 桌面端访问移动端采证页时，重定向到总览（采证是手机专用功能）
+  if (token && !isMobileDevice() && to.path === '/mobile-capture') {
+    return '/overview'
+  }
+
+  return true
 })
 
 export default router

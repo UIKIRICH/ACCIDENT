@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 accident_platform.db
+accident_platform.db-shm
+accident_platform.db-wal
 temp/
 uploads/
 .env
@@ -11,3 +13,7 @@ uploads/
 node_modules/
 dist/
 .DS_Store
+
+# 上传的媒体文件
+backend/uploaded_videos/
+backend/uploaded_images/
