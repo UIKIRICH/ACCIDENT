@@ -216,7 +216,8 @@ def _parse_qwen_semantic_output(qwen_response: Dict[str, Any]) -> Dict[str, Any]
 
 def fuse_video_evidence(
     detector_output: Dict[str, Any],
-    qwen_semantic_check: Dict[str, Any]
+    qwen_semantic_check: Dict[str, Any],
+    keyframe_count: int = 0
 ) -> Dict[str, Any]:
     """
     融合检测模型输出和千问语义校验结果，生成融合证据包。
@@ -336,6 +337,37 @@ def fuse_video_evidence(
         
         qwen_available = not (qwen.get("error") if qwen else False)
         
+        # ========== 新增：最终状态判定 ==========
+        final_status = "evidence_ready"
+        status_reason_parts = []
+        
+        # 判定逻辑
+        if not qwen_available:
+            final_status = "insufficient_evidence"
+            status_reason_parts.append("千问 API 不可用")
+        
+        if keyframe_count == 0:
+            final_status = "insufficient_evidence"
+            status_reason_parts.append("无关键帧")
+        
+        if conflict_detected:
+            final_status = "needs_manual_review"
+            status_reason_parts.append("检测模型与千问语义校验存在类型冲突")
+        
+        if critical_missing:
+            final_status = "needs_manual_review"
+            status_reason_parts.append(f"存在关键证据缺失: {', '.join(critical_missing)}")
+        
+        if manual_review_required and final_status != "insufficient_evidence":
+            final_status = "needs_manual_review"
+            if not status_reason_parts:
+                status_reason_parts.append("置信度不足或存在其他需人工复核的因素")
+        
+        if final_status == "evidence_ready" and not status_reason_parts:
+            status_reason_parts.append("证据一致且充分，可进入责任推理")
+        
+        status_reason = "；".join(status_reason_parts) if status_reason_parts else "未知状态"
+        
         fused = {
             "camera_context": {
                 "camera_view": camera_view,
@@ -363,6 +395,8 @@ def fuse_video_evidence(
             "fusion_result": {
                 "accepted_accident_type": accepted_type,
                 "type_decision_status": type_decision_status,
+                "final_status": final_status,
+                "status_reason": status_reason,
                 "rear_end_support": {
                     "score": round(rear_end_support_score, 4),
                     "status": rear_end_status,
@@ -1351,49 +1385,167 @@ def _build_default_case_summary(video_result: Dict[str, Any], image_evidence: Di
         lines.append(f"- additional_evidence: {additional_evidence.strip()}")
     return "\n".join(lines)
 
+from pathlib import Path
+import json
 def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any]:
+    """
+    构建发送给 Dify 的输入数据。
+    主要输出 summary_text，包含：
+      - 融合摘要（视角、车辆数、冲突状态等）
+      - YOLO 原始检测结果（JSON 格式）
+      - 千问完整原始分析（自然语言段落）
+    """
+    print("[DEBUG] _build_dify_case_inputs 被调用")
+    
     settings = _get_dify_settings()
     raw_video_result = payload.video_result or {}
     raw_image_evidence = payload.image_evidence or {}
     additional_evidence = payload.additional_evidence or ""
-    
-    # 从 raw_video_result 提取融合证据包
+
+    # ========== 1. 提取融合证据包（用于生成摘要） ==========
     fused_packet = raw_video_result.get("fused_evidence_packet", {})
     cam_ctx = fused_packet.get("camera_context", {})
-    veh_ev = fused_packet.get("vehicle_evidence", {})
-    det_out = fused_packet.get("detector_output", {})
     qwen_check = fused_packet.get("qwen_semantic_check", {})
     fusion_result = fused_packet.get("fusion_result", {})
-    
-    # 构建 Dify 输入结构 - 基于融合证据包
-    dify_input = {
-        "camera_context": cam_ctx,
-        "vehicle_evidence": veh_ev,
-        "detector_output": det_out,
-        "qwen_semantic_check": qwen_check,
-        "fusion_result": fusion_result
+
+    # ========== 2. 提取 YOLO 原始检测结果 ==========
+    yolo_raw = {
+        "accident_type": raw_video_result.get("accident_type", "unknown"),
+        "type_confidence": raw_video_result.get("type_confidence", 0.0),
+        "vehicle_count": raw_video_result.get("vehicle_count", 0),
+        "impact_time": raw_video_result.get("impact_time", 0.0),
+        "onset_time": raw_video_result.get("onset_time", 0.0),
+        "post_time": raw_video_result.get("post_time", 0.0),
+        "risk_level": raw_video_result.get("risk_level", "unknown"),
+        "type_topk": raw_video_result.get("type_topk", []),
+        "keyframe_count": len(raw_video_result.get("keyframes", []))
     }
-    
-    # 生成摘要文本 - 包含人工复核建议
+
+    # ========== 3. 提取千问完整原始输出（保留所有自然语言内容） ==========
+    qwen_analysis = raw_video_result.get("qwen_analysis", {})
+    qwen_raw_text = ""
+
+    # 方案 A：如果有 parsed 字段，直接拼接完整段落（最准确）
+    parsed = qwen_analysis.get("parsed", {})
+    if parsed:
+        # 定义千问输出的标准章节顺序
+        sections = [
+            "视频场景分析",
+            "涉事车辆分析",
+            "事故过程还原",
+            "关键行为识别",
+            "碰撞关系分析",
+            "事故原因分析",
+            "责任推断",
+            "最终结论"
+        ]
+        for section in sections:
+            if section in parsed and parsed[section]:
+                qwen_raw_text += f"【{section}】\n{parsed[section]}\n\n"
+    else:
+        # 方案 B：从 raw_content 提取完整原文
+        raw = qwen_analysis.get("raw_content", "")
+        if raw:
+            raw = raw.strip()
+            # 移除可能的 markdown 代码块标记
+            if raw.startswith("```json"):
+                raw = raw[7:]
+            if raw.startswith("```"):
+                raw = raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+            
+            # 尝试判断是否为 JSON 字符串
+            try:
+                qwen_json = json.loads(raw)
+                # 如果是 JSON，但包含支持性观察等文本，我们还原为更可读的格式
+                # 但为了保留完整信息，我们直接将整个 JSON 转成格式化的文本
+                # 但也可以从 JSON 中提取纯文本部分
+                # 优先提取 supporting_observations 和其他文本字段
+                parts = []
+                if qwen_json.get("camera_view"):
+                    parts.append(f"视角类型：{qwen_json.get('camera_view')}")
+                if "ego_vehicle_present" in qwen_json:
+                    parts.append(f"自车参与：{'是' if qwen_json.get('ego_vehicle_present') else '否'}")
+                if qwen_json.get("visible_external_vehicle_count") is not None:
+                    parts.append(f"可见外部车辆数：{qwen_json.get('visible_external_vehicle_count')}")
+                if qwen_json.get("estimated_involved_vehicle_count") is not None:
+                    parts.append(f"估计涉事车辆数：{qwen_json.get('estimated_involved_vehicle_count')}")
+                if qwen_json.get("external_vehicle_behavior"):
+                    parts.append(f"外部车辆行为：{qwen_json.get('external_vehicle_behavior')}")
+                if qwen_json.get("semantic_accident_type_candidate"):
+                    parts.append(f"语义事故类型候选：{qwen_json.get('semantic_accident_type_candidate')}")
+                if qwen_json.get("semantic_confidence") is not None:
+                    parts.append(f"语义置信度：{qwen_json.get('semantic_confidence')}")
+                
+                # 支持性观察（详细描述）
+                obs = qwen_json.get("supporting_observations", [])
+                if obs:
+                    parts.append("\n观察描述：")
+                    for o in obs:
+                        parts.append(f"  - {o}")
+                
+                # 缺失证据
+                missing = qwen_json.get("missing_evidence", [])
+                if missing:
+                    parts.append("\n缺失证据：")
+                    for m in missing:
+                        parts.append(f"  - {m}")
+                
+                # 冲突原因
+                conflicts = qwen_json.get("conflict_reasons", [])
+                if conflicts:
+                    parts.append("\n冲突原因：")
+                    for c in conflicts:
+                        parts.append(f"  - {c}")
+                
+                if "manual_review_required" in qwen_json:
+                    parts.append(f"人工复核：{'需要' if qwen_json.get('manual_review_required') else '不需要'}")
+                
+                qwen_raw_text = "\n".join(parts)
+            except json.JSONDecodeError:
+                # 如果不是 JSON，直接当作纯文本保留
+                qwen_raw_text = raw
+        else:
+            # 如果 raw_content 为空，尝试从 qwen_semantic_check 获取
+            qwen_raw_text = qwen_check.get("raw_content", "")
+
+    # ========== 4. 构建融合摘要（简短的决策信息） ==========
     summary_parts = []
     summary_parts.append(f"视角: {cam_ctx.get('camera_view', 'unknown')}")
     summary_parts.append(f"自车参与: {cam_ctx.get('ego_vehicle_present', False)}")
     summary_parts.append(f"外部可见车辆数: {cam_ctx.get('visible_external_vehicle_count', 0)}")
     summary_parts.append(f"估计涉事车辆数: {cam_ctx.get('estimated_involved_vehicle_count', 0)}")
-    
+
     if fusion_result:
         summary_parts.append(f"接受的事故类型: {fusion_result.get('accepted_accident_type', 'unknown')}")
         summary_parts.append(f"类型决策状态: {fusion_result.get('type_decision_status', 'unknown')}")
+        summary_parts.append(f"最终状态: {fusion_result.get('final_status', 'unknown')}")
+        summary_parts.append(f"状态说明: {fusion_result.get('status_reason', '')}")
         if fusion_result.get("conflict_detected"):
-            summary_parts.append(f"冲突检测: 是")
-            for reason in fusion_result.get("qwen_semantic_check", {}).get("conflict_reasons", []):
+            summary_parts.append("冲突检测: 是")
+            for reason in qwen_check.get("conflict_reasons", []):
                 summary_parts.append(f"  冲突: {reason}")
         summary_parts.append(f"人工复核: {'需要' if fusion_result.get('manual_review_required') else '不需要'}")
         summary_parts.append(f"系统操作: {fusion_result.get('system_action', 'unknown')}")
     
     summary_text = "\n".join(summary_parts)
-    
-    # 旧的 liability_packet 逻辑保留用于兼容
+
+    # ========== 5. 追加两部分原始输出 ==========
+    summary_text += "\n\n" + "=" * 60 + "\n"
+    summary_text += "【第一部分：YOLO 视频检测模型原始输出】\n"
+    summary_text += "-" * 40 + "\n"
+    summary_text += json.dumps(yolo_raw, ensure_ascii=False, indent=2)
+    summary_text += "\n\n" + "=" * 60 + "\n"
+    summary_text += "【第二部分：千问视频语义校验原始输出】\n"
+    summary_text += "-" * 40 + "\n"
+    if qwen_raw_text:
+        summary_text += qwen_raw_text
+    else:
+        summary_text += "（千问未返回有效分析结果）"
+
+    # ========== 6. 构造其他 payload（保持不变） ==========
     liability_packet = _build_liability_evidence_packet(raw_video_result, raw_image_evidence, additional_evidence)
     dify_video_result = {
         **(raw_video_result if isinstance(raw_video_result, dict) else {}),
@@ -1409,16 +1561,16 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
             "recommendation": liability_packet.get("recommendation", "")
         }
     }
-    
+
     inputs = {
         settings["summary_key"]: summary_text,
         settings["video_json_key"]: json.dumps(dify_video_result, ensure_ascii=False),
         settings["image_json_key"]: json.dumps(dify_image_evidence, ensure_ascii=False),
         settings["extra_key"]: additional_evidence,
     }
-    
-    return inputs
 
+    # ========== 7. 保存日志到文件（调试用） ==========
+    return inputs
 def _extract_dify_answer_text(dify_response: Dict[str, Any]) -> str:
     data = dify_response.get("data")
     if not isinstance(data, dict):
