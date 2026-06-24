@@ -296,6 +296,24 @@ export const CasesAPI = {
     return request('GET', `/api/cases/${caseId}/evidence-consistency`)
   },
 
+  // 视频语义校验（千问多模态）相关接口
+  // 1. 获取融合证据包（前端展示用，最常用）
+  async getFusedEvidence(caseId) {
+    return request('GET', `/api/cases/${caseId}/fused-evidence`)
+  },
+
+  // 2. 触发千问视频语义校验（通常由视频处理流程在后端自动串联，前端仅在手动重试时调用）
+  // data: { video_path, keyframes, detector_output }
+  async videoSemanticCheck(caseId, data) {
+    return request('POST', `/api/cases/${caseId}/video-semantic-check`, data)
+  },
+
+  // 3. 触发证据融合（通常由后端流程自动调用）
+  // data: { detector_output, qwen_semantic_check }
+  async fuseVideoEvidence(caseId, data) {
+    return request('POST', `/api/cases/${caseId}/fuse-video-evidence`, data)
+  },
+
   async getEvidences(caseId) {
     return request('GET', `/api/cases/${caseId}/evidences`)
   },

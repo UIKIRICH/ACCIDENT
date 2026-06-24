@@ -111,7 +111,12 @@ const initialState = () => ({
     difyResult: null,
     difyOutput: '',
     difyLegalClues: [],
-    difyAnalysisText: ''
+    difyAnalysisText: '',
+    // 视频语义校验（千问）+ 证据融合 相关字段
+    fusedEvidence: null,        // 融合证据包完整数据（fused_evidence_packet）
+    semanticCheck: null,        // 千问语义校验结果（快捷访问 = fusedEvidence.qwen_semantic_check）
+    fusionResult: null,         // 融合结果（快捷访问 = fusedEvidence.fusion_result）
+    cameraContext: null         // 视角上下文（快捷访问 = fusedEvidence.camera_context）
   },
   recommendation: {
     summary: '待生成责任建议',

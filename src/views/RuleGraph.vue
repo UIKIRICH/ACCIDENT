@@ -4,7 +4,7 @@
     <div class="page-header">
       <div class="header-content">
         <h1 class="page-title">规则依据图谱</h1>
-        <p class="page-subtitle">事实 → 规则 → 责任 → 复核 的可解释推导链路</p>
+        <p class="page-subtitle">视频检测 → 语义校验 → 融合门控 → 事实 → 规则 → 责任 → 复核 的可解释推导链路</p>
       </div>
     </div>
 
@@ -51,6 +51,21 @@
       <!-- 流向图例 -->
       <div class="flow-legend">
         <div class="legend-item">
+          <span class="legend-dot" style="background:#007AFF"></span>
+          <span class="legend-text">视频检测</span>
+        </div>
+        <span class="legend-arrow">→</span>
+        <div class="legend-item">
+          <span class="legend-dot" style="background:#00C7BE"></span>
+          <span class="legend-text">语义校验</span>
+        </div>
+        <span class="legend-arrow">→</span>
+        <div class="legend-item">
+          <span class="legend-dot" style="background:#AF52DE"></span>
+          <span class="legend-text">融合门控</span>
+        </div>
+        <span class="legend-arrow">→</span>
+        <div class="legend-item">
           <span class="legend-dot" style="background:#34C759"></span>
           <span class="legend-text">事实</span>
         </div>
@@ -71,9 +86,93 @@
         </div>
       </div>
 
-      <!-- 4 列节点图谱 -->
+      <!-- 7 列节点图谱 -->
       <div class="graph-container">
-        <!-- 第 1 列：事实 -->
+        <!-- 第 1 列：视频检测模型 -->
+        <div class="graph-column detector">
+          <div class="column-header" style="--col-color:#007AFF">
+            <span class="column-dot"></span>
+            <span class="column-title">视频检测</span>
+            <span class="column-count">{{ fusedEvidence ? 1 : 0 }}</span>
+          </div>
+          <div class="column-body">
+            <div
+              v-if="fusedEvidence"
+              class="node-card detector-node"
+              :class="{ selected: isNodeSelected('detector', 0) }"
+              @click="selectNode('detector', fusedEvidence, 0)"
+            >
+              <div class="node-tag">检测模型</div>
+              <div class="node-title">{{ mapAccidentType(fusedEvidence.detector_output?.candidate_accident_type_from_detector) }}</div>
+              <div class="node-desc">置信度 {{ formatConfidence(fusedEvidence.detector_output?.detector_type_confidence) }}</div>
+              <div v-if="fusedEvidence.fusion_result?.rear_end_support" class="node-confidence">
+                追尾支持 {{ formatConfidence(fusedEvidence.fusion_result.rear_end_support.score) }}
+              </div>
+            </div>
+            <div v-else class="empty-node">暂无</div>
+          </div>
+        </div>
+
+        <!-- 连线 1 -->
+        <div class="graph-connector"><span class="connector-arrow">→</span></div>
+
+        <!-- 第 2 列：千问语义校验 -->
+        <div class="graph-column semantic">
+          <div class="column-header" style="--col-color:#00C7BE">
+            <span class="column-dot"></span>
+            <span class="column-title">语义校验</span>
+            <span class="column-count">{{ fusedEvidence?.qwen_semantic_check ? 1 : 0 }}</span>
+          </div>
+          <div class="column-body">
+            <div
+              v-if="fusedEvidence?.qwen_semantic_check"
+              class="node-card semantic-node"
+              :class="{ selected: isNodeSelected('semantic', 0) }"
+              @click="selectNode('semantic', fusedEvidence, 0)"
+            >
+              <div class="node-tag">千问</div>
+              <div class="node-title">{{ mapAccidentType(fusedEvidence.qwen_semantic_check.semantic_accident_type_from_qwen) }}</div>
+              <div class="node-desc">{{ mapCameraView(fusedEvidence.camera_context?.camera_view) }}</div>
+              <div class="node-confidence">
+                置信度 {{ formatConfidence(fusedEvidence.qwen_semantic_check.semantic_confidence) }}
+              </div>
+            </div>
+            <div v-else class="empty-node">暂无</div>
+          </div>
+        </div>
+
+        <!-- 连线 2 -->
+        <div class="graph-connector"><span class="connector-arrow">→</span></div>
+
+        <!-- 第 3 列：证据融合门控 -->
+        <div class="graph-column fusion">
+          <div class="column-header" style="--col-color:#AF52DE">
+            <span class="column-dot"></span>
+            <span class="column-title">融合门控</span>
+            <span class="column-count">{{ fusedEvidence?.fusion_result ? 1 : 0 }}</span>
+          </div>
+          <div class="column-body">
+            <div
+              v-if="fusedEvidence?.fusion_result"
+              class="node-card fusion-node"
+              :class="{ 'has-conflict': fusedEvidence.fusion_result.conflict_detected, selected: isNodeSelected('fusion', 0) }"
+              @click="selectNode('fusion', fusedEvidence, 0)"
+            >
+              <div class="node-tag">融合</div>
+              <div class="node-title">{{ mapAccidentType(fusedEvidence.fusion_result.accepted_accident_type) }}</div>
+              <div class="node-desc">{{ mapFinalStatus(fusedEvidence.fusion_result.final_status) }}</div>
+              <div class="node-confidence" :class="{ 'text-danger': fusedEvidence.fusion_result.manual_review_required }">
+                {{ fusedEvidence.fusion_result.manual_review_required ? '需人工复核' : '可进入责任推理' }}
+              </div>
+            </div>
+            <div v-else class="empty-node">暂无</div>
+          </div>
+        </div>
+
+        <!-- 连线 3 -->
+        <div class="graph-connector"><span class="connector-arrow">→</span></div>
+
+        <!-- 第 4 列：事实 -->
         <div class="graph-column facts">
           <div class="column-header" style="--col-color:#34C759">
             <span class="column-dot"></span>
@@ -206,8 +305,152 @@
           <button class="detail-close" @click="selectedNode = null">×</button>
         </div>
         <div class="detail-body">
+          <!-- 视频检测模型详情 -->
+          <template v-if="selectedNode.type === 'detector'">
+            <div class="detail-row">
+              <span class="detail-label">候选事故类型</span>
+              <span class="detail-value">{{ mapAccidentType(selectedNode.data.detector_output?.candidate_accident_type_from_detector) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">检测置信度</span>
+              <span class="detail-value">{{ formatConfidence(selectedNode.data.detector_output?.detector_type_confidence) }}</span>
+            </div>
+            <div v-if="selectedNode.data.fusion_result?.rear_end_support" class="detail-row">
+              <span class="detail-label">追尾特征支持</span>
+              <span class="detail-value">
+                {{ mapRearEndStatus(selectedNode.data.fusion_result.rear_end_support.status) }}
+                （评分 {{ selectedNode.data.fusion_result.rear_end_support.score }}）
+              </span>
+            </div>
+            <div v-if="selectedNode.data.fusion_result?.rear_end_support?.reason" class="detail-row">
+              <span class="detail-label">说明</span>
+              <span class="detail-value">{{ selectedNode.data.fusion_result.rear_end_support.reason }}</span>
+            </div>
+            <div class="detail-tip">
+              检测模型负责"看到了什么"，输出车辆目标、关键帧与事故类型候选，但不直接定责。
+            </div>
+          </template>
+
+          <!-- 千问语义校验详情 -->
+          <template v-else-if="selectedNode.type === 'semantic'">
+            <div class="detail-row">
+              <span class="detail-label">视角类型</span>
+              <span class="detail-value">{{ mapCameraView(selectedNode.data.camera_context?.camera_view) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">自车状态</span>
+              <span class="detail-value">{{ selectedNode.data.camera_context?.ego_vehicle_present ? '隐式参与' : '未参与' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">画面可见外部车辆数</span>
+              <span class="detail-value">{{ selectedNode.data.camera_context?.visible_external_vehicle_count ?? '—' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">估计涉事车辆数</span>
+              <span class="detail-value">{{ selectedNode.data.camera_context?.estimated_involved_vehicle_count ?? '—' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">外部车辆行为</span>
+              <span class="detail-value">{{ mapBehavior(selectedNode.data.vehicle_evidence?.external_vehicle_behavior) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">语义事故类型</span>
+              <span class="detail-value">{{ mapAccidentType(selectedNode.data.qwen_semantic_check?.semantic_accident_type_from_qwen) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">语义置信度</span>
+              <span class="detail-value">{{ formatConfidence(selectedNode.data.qwen_semantic_check?.semantic_confidence) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">与检测模型冲突</span>
+              <span class="detail-value" :class="{ 'text-danger': selectedNode.data.qwen_semantic_check?.conflict_with_detector }">
+                {{ selectedNode.data.qwen_semantic_check?.conflict_with_detector ? '是' : '否' }}
+              </span>
+            </div>
+            <div v-if="selectedNode.data.qwen_semantic_check?.conflict_reasons?.length" class="detail-list-block">
+              <div class="detail-sub-label">冲突原因</div>
+              <ul class="detail-reason-list">
+                <li v-for="(r, i) in selectedNode.data.qwen_semantic_check.conflict_reasons" :key="i">{{ r }}</li>
+              </ul>
+            </div>
+            <div v-if="selectedNode.data.qwen_semantic_check?.missing_evidence?.length" class="detail-list-block">
+              <div class="detail-sub-label">缺失证据</div>
+              <ul class="detail-reason-list">
+                <li v-for="(m, i) in selectedNode.data.qwen_semantic_check.missing_evidence" :key="i">{{ m }}</li>
+              </ul>
+            </div>
+            <div class="detail-tip">
+              千问语义校验负责"这段视频在发生什么"，识别视角、自车隐式参与和车辆行为语义，不直接定责。
+            </div>
+          </template>
+
+          <!-- 证据融合门控详情 -->
+          <template v-else-if="selectedNode.type === 'fusion'">
+            <div class="detail-row">
+              <span class="detail-label">最终事故类型</span>
+              <span class="detail-value" :class="{ 'text-warning': selectedNode.data.fusion_result?.accepted_accident_type === 'unknown' }">
+                {{ mapAccidentType(selectedNode.data.fusion_result?.accepted_accident_type) }}
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">系统状态</span>
+              <span class="detail-value">{{ mapFinalStatus(selectedNode.data.fusion_result?.final_status) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">系统动作</span>
+              <span class="detail-value">{{ mapSystemAction(selectedNode.data.fusion_result?.system_action) }}</span>
+            </div>
+            <div v-if="selectedNode.data.fusion_result?.status_reason" class="detail-row">
+              <span class="detail-label">状态原因</span>
+              <span class="detail-value">{{ selectedNode.data.fusion_result.status_reason }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">是否冲突</span>
+              <span class="detail-value" :class="{ 'text-danger': selectedNode.data.fusion_result?.conflict_detected }">
+                {{ selectedNode.data.fusion_result?.conflict_detected ? '存在冲突' : '无冲突' }}
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">需人工复核</span>
+              <span class="detail-value" :class="{ 'text-danger': selectedNode.data.fusion_result?.manual_review_required }">
+                {{ selectedNode.data.fusion_result?.manual_review_required ? '是' : '否' }}
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">可进入责任推理</span>
+              <span class="detail-value" :class="{ 'text-success': selectedNode.data.fusion_result?.should_enter_liability_reasoning }">
+                {{ selectedNode.data.fusion_result?.should_enter_liability_reasoning ? '是' : '否' }}
+              </span>
+            </div>
+            <div v-if="selectedNode.data.fusion_result?.keyframe_video_consistency" class="detail-list-block">
+              <div class="detail-sub-label">证据一致性</div>
+              <div class="detail-row">
+                <span class="detail-label">一致性评分</span>
+                <span class="detail-value">
+                  {{ mapConsistencyLevel(selectedNode.data.fusion_result.keyframe_video_consistency.level) }}
+                  （{{ selectedNode.data.fusion_result.keyframe_video_consistency.score }}）
+                </span>
+              </div>
+              <div v-if="selectedNode.data.fusion_result.keyframe_video_consistency.conflict_items?.length" class="detail-list-block">
+                <div class="detail-sub-label">冲突项</div>
+                <ul class="detail-reason-list">
+                  <li v-for="(c, i) in selectedNode.data.fusion_result.keyframe_video_consistency.conflict_items" :key="i">{{ c }}</li>
+                </ul>
+              </div>
+              <div v-if="selectedNode.data.fusion_result.keyframe_video_consistency.missing_items?.length" class="detail-list-block">
+                <div class="detail-sub-label">缺失项</div>
+                <ul class="detail-reason-list">
+                  <li v-for="(m, i) in selectedNode.data.fusion_result.keyframe_video_consistency.missing_items" :key="i">{{ m }}</li>
+                </ul>
+              </div>
+            </div>
+            <div class="detail-tip">
+              融合层负责"这些证据能不能进入责任推理"，根据规则门控决定是否采纳、修正或转人工复核。
+            </div>
+          </template>
+
           <!-- 事实详情 -->
-          <template v-if="selectedNode.type === 'fact'">
+          <template v-else-if="selectedNode.type === 'fact'">
             <div class="detail-row">
               <span class="detail-label">事实类型</span>
               <span class="detail-value">{{ selectedNode.data.fact_type || '—' }}</span>
@@ -333,6 +576,57 @@ const facts = ref([])
 const matchedRules = ref([])
 const liability = ref(null)
 const reviews = ref([])
+// 视频语义校验 + 证据融合 数据
+const fusedEvidence = ref(null)
+
+// ── 字段中文映射（避免裸露英文枚举值） ──
+const CAMERA_VIEW_MAP = {
+  dashcam_ego_view: '行车记录仪视角',
+  roadside_view: '路侧监控视角',
+  surveillance_view: '交通监控视角',
+  unknown: '未知视角'
+}
+const BEHAVIOR_MAP = {
+  lane_change: '变道',
+  cut_in: '切入',
+  braking: '急停',
+  straight: '直行',
+  unknown: '未知'
+}
+const ACCIDENT_TYPE_MAP = {
+  rear_end: '追尾',
+  side_collision: '侧向碰撞',
+  lane_change_or_cut_in: '变道/切入',
+  head_on: '正面碰撞',
+  unknown: '暂不直接认定'
+}
+const FINAL_STATUS_MAP = {
+  evidence_ready: '证据就绪',
+  needs_manual_review: '需人工复核',
+  insufficient_evidence: '证据不足'
+}
+const SYSTEM_ACTION_MAP = {
+  manual_review_required: '需人工复核',
+  proceed_to_liability: '进入责任推理'
+}
+const REAR_END_STATUS_MAP = {
+  supported: '支持',
+  partially_supported: '部分支持',
+  not_supported: '不支持'
+}
+const CONSISTENCY_LEVEL_MAP = {
+  high: '高',
+  medium: '中',
+  low: '低'
+}
+
+function mapCameraView(val) { return CAMERA_VIEW_MAP[val] || val || '—' }
+function mapBehavior(val) { return BEHAVIOR_MAP[val] || val || '—' }
+function mapAccidentType(val) { return ACCIDENT_TYPE_MAP[val] || val || '—' }
+function mapFinalStatus(val) { return FINAL_STATUS_MAP[val] || val || '—' }
+function mapSystemAction(val) { return SYSTEM_ACTION_MAP[val] || val || '—' }
+function mapRearEndStatus(val) { return REAR_END_STATUS_MAP[val] || val || '—' }
+function mapConsistencyLevel(val) { return CONSISTENCY_LEVEL_MAP[val] || val || '—' }
 
 // 加载与选中状态
 const loading = ref(false)
@@ -346,12 +640,28 @@ const currentCaseMeta = computed(() => {
 
 // 详情面板颜色与标题
 const detailColor = computed(() => {
-  const map = { fact: '#34C759', rule: '#FF9500', liability: '#5856D6', review: '#FF3B30' }
+  const map = {
+    detector: '#007AFF',
+    semantic: '#00C7BE',
+    fusion: '#AF52DE',
+    fact: '#34C759',
+    rule: '#FF9500',
+    liability: '#5856D6',
+    review: '#FF3B30'
+  }
   return map[selectedNode.value?.type] || '#007AFF'
 })
 
 const detailTypeLabel = computed(() => {
-  const map = { fact: '事实节点', rule: '规则节点', liability: '责任节点', review: '复核节点' }
+  const map = {
+    detector: '视频检测节点',
+    semantic: '语义校验节点',
+    fusion: '融合门控节点',
+    fact: '事实节点',
+    rule: '规则节点',
+    liability: '责任节点',
+    review: '复核节点'
+  }
   return map[selectedNode.value?.type] || '节点详情'
 })
 
@@ -452,14 +762,16 @@ async function loadGraphData(caseId) {
   matchedRules.value = []
   liability.value = null
   reviews.value = []
+  fusedEvidence.value = null
 
   try {
-    // 并行调用 4 个接口
-    const [factsRes, rulesRes, liabilityRes, reviewsRes] = await Promise.all([
+    // 并行调用 5 个接口（新增 getFusedEvidence）
+    const [factsRes, rulesRes, liabilityRes, reviewsRes, fusedRes] = await Promise.all([
       CasesAPI.getFacts(caseId).catch(err => ({ _error: err.message })),
       CasesAPI.getMatchedRules(caseId).catch(err => ({ _error: err.message })),
       CasesAPI.getLiabilityLatest(caseId).catch(err => ({ _error: err.message })),
-      CasesAPI.getReviews(caseId).catch(err => ({ _error: err.message }))
+      CasesAPI.getReviews(caseId).catch(err => ({ _error: err.message })),
+      CasesAPI.getFusedEvidence(caseId).catch(err => ({ _error: err.message }))
     ])
 
     // 事实节点
@@ -482,8 +794,15 @@ async function loadGraphData(caseId) {
       reviews.value = reviewsRes.data
     }
 
+    // 视频语义校验 + 证据融合数据
+    if (fusedRes && fusedRes.success) {
+      const packet = fusedRes.data?.fused_evidence_packet
+      // 后端在无数据时返回空对象 {}，这里过滤掉空包
+      fusedEvidence.value = (packet && Object.keys(packet).length > 0) ? packet : null
+    }
+
     // 全部为空时提示
-    if (!facts.value.length && !matchedRules.value.length && !liability.value && !reviews.value.length) {
+    if (!facts.value.length && !matchedRules.value.length && !liability.value && !reviews.value.length && !fusedEvidence.value) {
       notify({ title: '提示', message: '该案件暂无推导链路数据', type: 'warning' })
     }
   } catch (err) {
@@ -707,10 +1026,10 @@ onMounted(async () => {
   font-weight: 700;
 }
 
-/* ── 4 列图谱布局 ── */
+/* ── 7 列图谱布局 ── */
 .graph-container {
   display: grid;
-  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr auto 1fr;
   gap: 0;
   align-items: stretch;
 }
@@ -790,6 +1109,37 @@ onMounted(async () => {
 }
 
 /* 各列节点配色（浅色背景 + 对应色边框） */
+.detector-node {
+  background: rgba(0, 122, 255, 0.08);
+  border-left-color: #007AFF;
+}
+.detector-node.selected {
+  border-color: #007AFF;
+  background: rgba(0, 122, 255, 0.14);
+}
+
+.semantic-node {
+  background: rgba(0, 199, 190, 0.08);
+  border-left-color: #00C7BE;
+}
+.semantic-node.selected {
+  border-color: #00C7BE;
+  background: rgba(0, 199, 190, 0.14);
+}
+
+.fusion-node {
+  background: rgba(175, 82, 222, 0.08);
+  border-left-color: #AF52DE;
+}
+.fusion-node.selected {
+  border-color: #AF52DE;
+  background: rgba(175, 82, 222, 0.14);
+}
+.fusion-node.has-conflict {
+  background: rgba(255, 149, 0, 0.10);
+  border-left-color: #FF9500;
+}
+
 .fact-node {
   background: rgba(52, 199, 89, 0.08);
   border-left-color: #34C759;
@@ -993,6 +1343,64 @@ onMounted(async () => {
   color: var(--text-primary);
   font-weight: 500;
   line-height: var(--leading-relaxed);
+  word-break: break-word;
+}
+
+/* 详情面板辅助色（冲突/警告/成功） */
+.text-danger {
+  color: #FF3B30 !important;
+  font-weight: 600;
+}
+
+.text-warning {
+  color: #FF9500 !important;
+  font-weight: 600;
+}
+
+.text-success {
+  color: #34C759 !important;
+  font-weight: 600;
+}
+
+/* 详情提示框 */
+.detail-tip {
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(0, 122, 255, 0.06);
+  border-left: 3px solid #007AFF;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+}
+
+/* 详情子列表块 */
+.detail-list-block {
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+}
+
+.detail-sub-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.detail-reason-list {
+  margin: 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.detail-reason-list li {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  padding: 3px 0;
   word-break: break-word;
 }
 

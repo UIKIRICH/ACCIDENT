@@ -190,6 +190,112 @@
         </div>
       </div>
 
+      <!-- 视频语义校验（千问 + 融合门控） -->
+      <div class="section-card semantic-section" v-if="fusedEvidence">
+        <div class="section-header">
+          <div class="section-title-wrapper">
+            <span class="section-icon icon-gradient semantic-icon" v-html="icons.brain"></span>
+            <h2 class="section-title">视频语义校验</h2>
+          </div>
+          <span class="summary-pill" :class="{ 'pill-warning': fusedEvidence.fusion_result?.conflict_detected, 'pill-success': !fusedEvidence.fusion_result?.conflict_detected }">
+            {{ fusedEvidence.fusion_result?.conflict_detected ? '存在冲突' : '已通过' }}
+          </span>
+        </div>
+
+        <div class="semantic-content">
+          <!-- 视角与车辆上下文 -->
+          <div class="semantic-block">
+            <div class="semantic-block-title">视角与车辆上下文</div>
+            <div class="semantic-info-grid">
+              <div class="semantic-info-item">
+                <span class="semantic-info-label">视角类型</span>
+                <span class="semantic-info-value">{{ mapCameraView(fusedEvidence.camera_context?.camera_view) }}</span>
+              </div>
+              <div class="semantic-info-item">
+                <span class="semantic-info-label">自车状态</span>
+                <span class="semantic-info-value">{{ fusedEvidence.camera_context?.ego_vehicle_present ? '隐式参与' : '未参与' }}</span>
+              </div>
+              <div class="semantic-info-item">
+                <span class="semantic-info-label">画面可见外部车辆数</span>
+                <span class="semantic-info-value">{{ fusedEvidence.camera_context?.visible_external_vehicle_count ?? '—' }}</span>
+              </div>
+              <div class="semantic-info-item">
+                <span class="semantic-info-label">估计涉事车辆数</span>
+                <span class="semantic-info-value">{{ fusedEvidence.camera_context?.estimated_involved_vehicle_count ?? '—' }}</span>
+              </div>
+              <div class="semantic-info-item">
+                <span class="semantic-info-label">外部车辆行为</span>
+                <span class="semantic-info-value">{{ mapBehavior(fusedEvidence.vehicle_evidence?.external_vehicle_behavior) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 双通道事故类型对比 -->
+          <div class="semantic-block">
+            <div class="semantic-block-title">事故类型判定（双通道）</div>
+            <div class="semantic-dual-channel">
+              <div class="semantic-channel semantic-detector">
+                <div class="semantic-channel-label">检测模型候选</div>
+                <div class="semantic-channel-type">{{ mapAccidentType(fusedEvidence.detector_output?.candidate_accident_type_from_detector) }}</div>
+                <div class="semantic-channel-conf">置信度 {{ formatSemanticConfidence(fusedEvidence.detector_output?.detector_type_confidence) }}</div>
+              </div>
+              <div class="semantic-channel semantic-qwen">
+                <div class="semantic-channel-label">千问语义校验</div>
+                <div class="semantic-channel-type">{{ mapAccidentType(fusedEvidence.qwen_semantic_check?.semantic_accident_type_from_qwen) }}</div>
+                <div class="semantic-channel-conf">置信度 {{ formatSemanticConfidence(fusedEvidence.qwen_semantic_check?.semantic_confidence) }}</div>
+              </div>
+            </div>
+            <div class="semantic-final-type">
+              <span class="semantic-final-label">最终事故类型</span>
+              <span class="semantic-final-value" :class="{ 'text-warning': fusedEvidence.fusion_result?.accepted_accident_type === 'unknown' }">
+                {{ mapAccidentType(fusedEvidence.fusion_result?.accepted_accident_type) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- 系统结论 -->
+          <div class="semantic-block">
+            <div class="semantic-block-title">系统结论</div>
+            <div class="semantic-conclusion" :class="{ 'has-conflict': fusedEvidence.fusion_result?.conflict_detected }">
+              <div class="semantic-conclusion-row">
+                <span class="semantic-conclusion-label">系统状态</span>
+                <span class="semantic-conclusion-value">{{ mapFinalStatus(fusedEvidence.fusion_result?.final_status) }}</span>
+              </div>
+              <div class="semantic-conclusion-row">
+                <span class="semantic-conclusion-label">系统动作</span>
+                <span class="semantic-conclusion-value">{{ mapSystemAction(fusedEvidence.fusion_result?.system_action) }}</span>
+              </div>
+              <div class="semantic-conclusion-row" v-if="fusedEvidence.fusion_result?.status_reason">
+                <span class="semantic-conclusion-label">状态原因</span>
+                <span class="semantic-conclusion-value">{{ fusedEvidence.fusion_result.status_reason }}</span>
+              </div>
+              <div class="semantic-conclusion-row">
+                <span class="semantic-conclusion-label">需人工复核</span>
+                <span class="semantic-conclusion-value" :class="{ 'text-danger': fusedEvidence.fusion_result?.manual_review_required }">
+                  {{ fusedEvidence.fusion_result?.manual_review_required ? '是' : '否' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 冲突原因（红色高亮） -->
+          <div class="semantic-block" v-if="fusedEvidence.qwen_semantic_check?.conflict_reasons?.length">
+            <div class="semantic-block-title conflict-title">冲突原因</div>
+            <ul class="semantic-reason-list conflict-list">
+              <li v-for="(reason, i) in fusedEvidence.qwen_semantic_check.conflict_reasons" :key="i">{{ reason }}</li>
+            </ul>
+          </div>
+
+          <!-- 缺失证据 -->
+          <div class="semantic-block" v-if="fusedEvidence.qwen_semantic_check?.missing_evidence?.length">
+            <div class="semantic-block-title">缺失证据</div>
+            <ul class="semantic-reason-list missing-list">
+              <li v-for="(item, i) in fusedEvidence.qwen_semantic_check.missing_evidence" :key="i">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <!-- 分析结果 -->
       <div class="section-card analysis-result">
         <div class="section-header">
@@ -386,9 +492,15 @@
       <!-- 确认判定按钮 -->
       <div class="section-card confirm-section" v-if="hasAnalysis">
         <div class="confirm-actions">
-          <button class="btn btn-primary btn-lg" @click="confirmAnalysis" :disabled="isSaving">
+          <button
+            class="btn btn-lg"
+            :class="needManualReview ? 'btn-warning' : 'btn-primary'"
+            @click="confirmAnalysis"
+            :disabled="isSaving"
+          >
             <span class="btn-icon" v-html="icons.check"></span>
             <span v-if="isSaving">保存中...</span>
+            <span v-else-if="needManualReview">提交人工复核</span>
             <span v-else>保存判定</span>
           </button>
         </div>
@@ -420,6 +532,79 @@ const {
 } = useAccidentFlow()
 
 goStep('analysis')
+
+// 视频语义校验（千问）+ 证据融合 数据
+const fusedEvidence = ref(null)
+
+// ── 字段中文映射（避免裸露英文枚举值） ──
+const CAMERA_VIEW_MAP = {
+  dashcam_ego_view: '行车记录仪视角',
+  roadside_view: '路侧监控视角',
+  surveillance_view: '交通监控视角',
+  unknown: '未知视角'
+}
+const BEHAVIOR_MAP = {
+  lane_change: '变道',
+  cut_in: '切入',
+  braking: '急停',
+  straight: '直行',
+  unknown: '未知'
+}
+const ACCIDENT_TYPE_MAP = {
+  rear_end: '追尾',
+  side_collision: '侧向碰撞',
+  lane_change_or_cut_in: '变道/切入',
+  head_on: '正面碰撞',
+  unknown: '暂不直接认定'
+}
+const FINAL_STATUS_MAP = {
+  evidence_ready: '证据就绪',
+  needs_manual_review: '需人工复核',
+  insufficient_evidence: '证据不足'
+}
+const SYSTEM_ACTION_MAP = {
+  manual_review_required: '需人工复核',
+  proceed_to_liability: '进入责任推理'
+}
+const CONSISTENCY_LEVEL_MAP = { high: '高', medium: '中', low: '低' }
+
+function mapCameraView(val) { return CAMERA_VIEW_MAP[val] || val || '—' }
+function mapBehavior(val) { return BEHAVIOR_MAP[val] || val || '—' }
+function mapAccidentType(val) { return ACCIDENT_TYPE_MAP[val] || val || '—' }
+function mapFinalStatus(val) { return FINAL_STATUS_MAP[val] || val || '—' }
+function mapSystemAction(val) { return SYSTEM_ACTION_MAP[val] || val || '—' }
+function mapConsistencyLevel(val) { return CONSISTENCY_LEVEL_MAP[val] || val || '—' }
+
+// 格式化置信度（0~1 → 百分比）
+function formatSemanticConfidence(val) {
+  if (val == null || val === '') return '—'
+  const num = Number(val)
+  if (isNaN(num)) return String(val)
+  return (num <= 1 ? num * 100 : num).toFixed(1) + '%'
+}
+
+// 是否需要人工复核（便捷计算属性）
+const needManualReview = computed(() => !!fusedEvidence.value?.fusion_result?.manual_review_required)
+
+// 加载融合证据包
+async function loadFusedEvidence() {
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) return
+  try {
+    const result = await CasesAPI.getFusedEvidence(caseId)
+    if (result.success) {
+      const packet = result.data?.fused_evidence_packet
+      fusedEvidence.value = (packet && Object.keys(packet).length > 0) ? packet : null
+      // 同步到 store
+      state.analysis.fusedEvidence = fusedEvidence.value
+      state.analysis.semanticCheck = fusedEvidence.value?.qwen_semantic_check || null
+      state.analysis.fusionResult = fusedEvidence.value?.fusion_result || null
+      state.analysis.cameraContext = fusedEvidence.value?.camera_context || null
+    }
+  } catch (err) {
+    console.warn('加载融合证据包失败:', err)
+  }
+}
 
 // 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
 // 防止 undefined/null/"null"/"undefined" 等脏值传给后端
@@ -499,6 +684,7 @@ onMounted(() => {
 
   loadCaseLiability()
   loadConsistency()
+  loadFusedEvidence()
 })
 
 // 证据一致性检测
@@ -1387,6 +1573,239 @@ const confirmAnalysis = async () => {
   font-size: var(--text-xs);
   font-weight: 600;
   flex-shrink: 0;
+}
+
+.summary-pill.pill-warning {
+  background: rgba(255, 149, 0, 0.12);
+  color: #FF9500;
+}
+
+.summary-pill.pill-success {
+  background: rgba(52, 199, 89, 0.12);
+  color: #34C759;
+}
+
+/* ── 视频语义校验区块 ── */
+.semantic-section {
+  border-left: 3px solid #00C7BE;
+}
+
+.semantic-icon {
+  background: linear-gradient(135deg, #00C7BE, #007AFF) !important;
+}
+
+.semantic-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.semantic-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.semantic-block-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.semantic-block-title.conflict-title {
+  color: #FF3B30;
+}
+
+.semantic-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+
+.semantic-info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  gap: var(--space-2);
+}
+
+.semantic-info-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.semantic-info-value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* 双通道对比 */
+.semantic-dual-channel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.semantic-channel {
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--ch-color, #007AFF);
+}
+
+.semantic-detector { --ch-color: #007AFF; }
+.semantic-qwen { --ch-color: #00C7BE; }
+
+.semantic-channel-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.semantic-channel-type {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.semantic-channel-conf {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.semantic-final-type {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border-left: 3px solid #AF52DE;
+  margin-top: var(--space-2);
+}
+
+.semantic-final-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.semantic-final-value {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* 系统结论 */
+.semantic-conclusion {
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+}
+
+.semantic-conclusion.has-conflict {
+  background: rgba(255, 149, 0, 0.06);
+  border-color: rgba(255, 149, 0, 0.3);
+}
+
+.semantic-conclusion-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border-light);
+  gap: var(--space-3);
+}
+
+.semantic-conclusion-row:last-child {
+  border-bottom: none;
+}
+
+.semantic-conclusion-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.semantic-conclusion-value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* 原因/缺失列表 */
+.semantic-reason-list {
+  margin: 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.semantic-reason-list li {
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  padding: 4px 0;
+}
+
+.semantic-reason-list.conflict-list li {
+  color: #FF3B30;
+}
+
+.semantic-reason-list.missing-list li {
+  color: var(--text-tertiary);
+}
+
+/* 辅助色 */
+.text-danger {
+  color: #FF3B30 !important;
+  font-weight: 600;
+}
+
+.text-warning {
+  color: #FF9500 !important;
+  font-weight: 600;
+}
+
+/* 警告按钮（人工复核场景） */
+.btn-warning {
+  background: linear-gradient(135deg, #FF9500, #FF6B35);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(255, 149, 0, 0.3);
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: linear-gradient(135deg, #FFA726, #FF7B45);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(255, 149, 0, 0.4);
+}
+
+.btn-warning:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .semantic-info-grid,
+  .semantic-dual-channel {
+    grid-template-columns: 1fr;
+  }
 }
 
 .case-info { 

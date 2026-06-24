@@ -29,8 +29,20 @@
             <span class="info-value">{{ state.caseId }}</span>
           </div>
           <div class="info-item">
-            <span class="info-label">事故类型</span>
-            <span class="info-value">{{ state.form.accidentType || '待分析' }}</span>
+            <span class="info-label">视频视角</span>
+            <span class="info-value">{{ fusedEvidence ? mapCameraView(fusedEvidence.camera_context?.camera_view) : (state.form.accidentType || '待分析') }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">隐式自车</span>
+            <span class="info-value">{{ fusedEvidence ? (fusedEvidence.camera_context?.ego_vehicle_present ? '存在' : '不存在') : '—' }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">画面可见外部车辆数</span>
+            <span class="info-value">{{ fusedEvidence?.camera_context?.visible_external_vehicle_count ?? '—' }}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">估计涉事车辆数</span>
+            <span class="info-value">{{ fusedEvidence?.camera_context?.estimated_involved_vehicle_count ?? state.form.vehicles.length ?? '—' }}</span>
           </div>
           <div class="info-item">
             <span class="info-label">发生时间</span>
@@ -47,26 +59,54 @@
         <h2 class="section-title">二、分析结果概览</h2>
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-value">{{ state.analysis.confidence }}%</div>
-            <div class="stat-label">分析置信度</div>
+            <div class="stat-value">{{ fusedEvidence ? formatConfidence(fusedEvidence.detector_output?.detector_type_confidence) : (state.analysis.confidence + '%') }}</div>
+            <div class="stat-label">检测模型置信度</div>
           </div>
           <div class="stat-card">
-            <div class="stat-value">{{ state.analysis.evidenceIntegrity }}%</div>
-            <div class="stat-label">证据完整度</div>
+            <div class="stat-value">{{ fusedEvidence ? formatConfidence(fusedEvidence.qwen_semantic_check?.semantic_confidence) : '—' }}</div>
+            <div class="stat-label">语义校验置信度</div>
           </div>
           <div class="stat-card">
-            <div class="stat-value">{{ state.analysis.keyframes.length }}</div>
-            <div class="stat-label">关键帧数量</div>
+            <div class="stat-value">{{ fusedEvidence ? (fusedEvidence.fusion_result?.keyframe_video_consistency?.score ?? '—') : (state.analysis.evidenceIntegrity + '%') }}</div>
+            <div class="stat-label">证据一致性评分</div>
           </div>
           <div class="stat-card">
-            <div class="stat-value">{{ state.form.vehicles.length }}</div>
-            <div class="stat-label">涉事车辆</div>
+            <div class="stat-value" :class="{ 'text-warning': fusedEvidence?.fusion_result?.manual_review_required }">
+              {{ fusedEvidence ? mapFinalStatus(fusedEvidence.fusion_result?.final_status) : '待分析' }}
+            </div>
+            <div class="stat-label">系统状态</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 事故类型判定（三通道对比） -->
+      <div class="report-section" v-if="fusedEvidence">
+        <h2 class="section-title">三、事故类型判定</h2>
+        <div class="type-judgment">
+          <div class="type-channel channel-detector">
+            <div class="channel-label">检测模型候选</div>
+            <div class="channel-value">{{ mapAccidentType(fusedEvidence.detector_output?.candidate_accident_type_from_detector) }}</div>
+            <div class="channel-conf">置信度 {{ formatConfidence(fusedEvidence.detector_output?.detector_type_confidence) }}</div>
+          </div>
+          <div class="type-channel channel-qwen">
+            <div class="channel-label">语义校验结果</div>
+            <div class="channel-value">{{ mapAccidentType(fusedEvidence.qwen_semantic_check?.semantic_accident_type_from_qwen) }}</div>
+            <div class="channel-conf">置信度 {{ formatConfidence(fusedEvidence.qwen_semantic_check?.semantic_confidence) }}</div>
+          </div>
+          <div class="type-channel channel-final">
+            <div class="channel-label">最终事故类型</div>
+            <div class="channel-value" :class="{ 'text-warning': fusedEvidence.fusion_result?.accepted_accident_type === 'unknown' }">
+              {{ mapAccidentType(fusedEvidence.fusion_result?.accepted_accident_type) }}
+            </div>
+            <div class="channel-conf">
+              {{ fusedEvidence.fusion_result?.conflict_detected ? '证据存在冲突，进入人工复核' : '证据一致，进入责任推理' }}
+            </div>
           </div>
         </div>
       </div>
 
       <div class="report-section">
-        <h2 class="section-title">三、责任认定结果</h2>
+        <h2 class="section-title">{{ fusedEvidence ? '四' : '三' }}、责任认定结果</h2>
         <div class="liability-list">
           <div v-for="(liability, index) in vehicleLiabilities" :key="liability.key" class="liability-card" :class="{ primary: liability.liability === '主责' }">
             <div class="liability-header">
@@ -82,14 +122,21 @@
       </div>
 
       <div class="report-section">
-        <h2 class="section-title">四、认定理由</h2>
+        <h2 class="section-title">{{ fusedEvidence ? '五' : '四' }}、认定理由</h2>
         <div class="reasoning-box">
+          <!-- 融合说明文案（有融合证据时显示） -->
+          <p v-if="fusedEvidence" class="fusion-explain">
+            系统未直接采纳单一模型输出，而是结合检测结果与视频语义校验结果进行证据融合。
+            {{ fusedEvidence.fusion_result?.conflict_detected
+                ? '由于检测候选类型与语义校验结果存在差异，当前案件进入人工复核流程。'
+                : '检测候选类型与语义校验结果一致，证据已进入责任推理流程。' }}
+          </p>
           <p>{{ getReasoningText() }}</p>
         </div>
       </div>
 
       <div class="report-section">
-        <h2 class="section-title">五、处理建议</h2>
+        <h2 class="section-title">{{ fusedEvidence ? '六' : '五' }}、处理建议</h2>
         <div class="suggestions-list">
           <div class="suggestion-card">
             <div class="suggestion-content">
@@ -123,7 +170,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
@@ -132,6 +179,43 @@ import { CasesAPI } from '../api/index.js'
 const router = useRouter()
 const route = useRoute()
 const { state, setCurrentCase, getCurrentCase, isValidCaseId } = useAccidentFlow()
+
+// 视频语义校验 + 证据融合 数据
+const fusedEvidence = ref(null)
+
+// ── 字段中文映射（避免裸露英文枚举值） ──
+const CAMERA_VIEW_MAP = {
+  dashcam_ego_view: '行车记录仪视角',
+  roadside_view: '路侧监控视角',
+  surveillance_view: '交通监控视角',
+  unknown: '未知视角'
+}
+const ACCIDENT_TYPE_MAP = {
+  rear_end: '追尾',
+  side_collision: '侧向碰撞',
+  lane_change_or_cut_in: '变道/切入',
+  head_on: '正面碰撞',
+  unknown: '暂不直接认定'
+}
+const FINAL_STATUS_MAP = {
+  evidence_ready: '证据就绪',
+  needs_manual_review: '需人工复核',
+  insufficient_evidence: '证据不足'
+}
+const CONSISTENCY_LEVEL_MAP = { high: '高', medium: '中', low: '低' }
+
+function mapCameraView(val) { return CAMERA_VIEW_MAP[val] || val || '—' }
+function mapAccidentType(val) { return ACCIDENT_TYPE_MAP[val] || val || '—' }
+function mapFinalStatus(val) { return FINAL_STATUS_MAP[val] || val || '—' }
+function mapConsistencyLevel(val) { return CONSISTENCY_LEVEL_MAP[val] || val || '—' }
+
+// 格式化置信度（0~1 → 百分比）
+function formatConfidence(val) {
+  if (val == null || val === '') return '—'
+  const num = Number(val)
+  if (isNaN(num)) return String(val)
+  return (num <= 1 ? num * 100 : num).toFixed(1) + '%'
+}
 
 // 统一获取 caseId：优先 URL query，fallback store/localStorage，自动过滤无效值
 const currentCaseId = () => {
@@ -156,9 +240,14 @@ async function loadCaseLiability() {
   // 同步到 store（防止刷新后 store 丢失）
   if (String(caseId) !== String(state.caseId)) setCurrentCase(caseId)
   try {
-    const result = await CasesAPI.getDetail(caseId)
-    if (result.success && result.data) {
-      const liability = result.data.liability
+    // 并行加载案件详情 + 融合证据包
+    const [detailResult, fusedResult] = await Promise.all([
+      CasesAPI.getDetail(caseId),
+      CasesAPI.getFusedEvidence(caseId)
+    ])
+
+    if (detailResult.success && detailResult.data) {
+      const liability = detailResult.data.liability
       if (liability) {
         state.analysis.vehicleLiabilities = liability.details?.vehicles || []
         state.analysis.confidence = liability.details?.confidence || state.analysis.confidence
@@ -169,6 +258,17 @@ async function loadCaseLiability() {
       // 案件不存在
       notify({ title: '案件不存在', message: `案件 ${caseId} 未找到，请从历史案例选择`, type: 'warning' })
       setTimeout(() => router.push('/history-cases'), 1500)
+    }
+
+    // 加载融合证据包
+    if (fusedResult.success) {
+      const packet = fusedResult.data?.fused_evidence_packet
+      fusedEvidence.value = (packet && Object.keys(packet).length > 0) ? packet : null
+      // 同步到 store，便于其他页面共享
+      state.analysis.fusedEvidence = fusedEvidence.value
+      state.analysis.semanticCheck = fusedEvidence.value?.qwen_semantic_check || null
+      state.analysis.fusionResult = fusedEvidence.value?.fusion_result || null
+      state.analysis.cameraContext = fusedEvidence.value?.camera_context || null
     }
   } catch (e) {
     console.warn('加载责任结果失败:', e)
@@ -545,6 +645,72 @@ const downloadReport = async () => {
   color: var(--text-secondary);
   line-height: var(--leading-relaxed);
   margin: 0;
+}
+
+.reasoning-box p + p {
+  margin-top: var(--space-3);
+}
+
+/* 融合说明文案 */
+.fusion-explain {
+  padding: var(--space-3) var(--space-4);
+  background: rgba(0, 122, 255, 0.06);
+  border-left: 3px solid #007AFF;
+  border-radius: var(--radius-md);
+  color: var(--text-primary) !important;
+  font-weight: 500;
+}
+
+/* 警告色（人工复核状态） */
+.text-warning {
+  color: #FF9500 !important;
+}
+
+/* 事故类型判定三通道对比 */
+.type-judgment {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.type-channel {
+  padding: var(--space-4);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border-left: 3px solid var(--ch-color, #007AFF);
+}
+
+.channel-detector { --ch-color: #007AFF; }
+.channel-qwen { --ch-color: #00C7BE; }
+.channel-final { --ch-color: #AF52DE; }
+
+.channel-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.channel-value {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.channel-conf {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  line-height: var(--leading-relaxed);
+}
+
+@media (max-width: 768px) {
+  .type-judgment {
+    grid-template-columns: 1fr;
+  }
 }
 
 .suggestions-list {
