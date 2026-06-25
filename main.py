@@ -1029,6 +1029,13 @@ async def api_get_rules(type: str = None, status: str = None, current_user: dict
     rules = get_rules(params)
     return {"success": True, "data": rules}
 
+@app.get("/api/rules/{rule_id}")
+async def api_get_rule(rule_id: str, current_user: dict = Depends(get_current_user)):
+    rule = get_rule(rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    return {"success": True, "data": rule}
+
 @app.post("/api/rules")
 async def api_create_rule(data: dict, current_user: dict = Depends(require_role("admin"))):
     rule = create_rule(data)
@@ -1863,14 +1870,12 @@ async def dify_preview_case_inputs(payload: DifyAccidentCaseRequest):
 @app.post("/analyze_image_evidence/")
 @app.post("/api/analyze_image_evidence/")
 async def analyze_image_evidence(data: dict):
-    from video_keyframe import _resolve_keyframe_path, get_image_classifier
+    from video_keyframe import _resolve_keyframe_path, analyze_image_with_yolo
     try:
         frame_url = data.get("frame_url", "")
         video_context = data.get("video_context", {})
         frame_path = _resolve_keyframe_path(frame_url)
-        classifier = get_image_classifier()
-        base_result = await run_in_threadpool(classifier.classify_rear_end, str(frame_path))
-        result = dict(base_result) if isinstance(base_result, dict) else {"raw": base_result}
+        result = await run_in_threadpool(analyze_image_with_yolo, str(frame_path))
         if video_context:
             result.setdefault("video_context", video_context)
         return {"frame_path": str(frame_path), "frame_url": frame_url, "image_evidence": result}
@@ -1884,13 +1889,13 @@ async def analyze_image_evidence(data: dict):
 @app.post("/analyze_image_file_evidence/")
 @app.post("/api/analyze_image_file_evidence/")
 async def analyze_image_file_evidence(file: UploadFile = File(...), video_context: str = Form(None)):
-    from video_keyframe import get_image_classifier, save_upload_file
+    from video_keyframe import analyze_image_with_yolo, save_upload_file
     if not file.filename:
         raise HTTPException(status_code=400, detail="未接收到图片文件")
     ext = Path(file.filename).suffix.lower()
     if ext not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
         raise HTTPException(status_code=400, detail=f"不支持的图片格式: {ext}")
-    UPLOAD_DIR = BASE_DIR / "backend" / "uploaded_videos"
+    UPLOAD_DIR = BASE_DIR / "backend" / "uploaded_images"
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     saved_name = f"image_{uuid.uuid4().hex[:10]}{ext}"
     saved_path = UPLOAD_DIR / saved_name
@@ -1904,9 +1909,7 @@ async def analyze_image_file_evidence(file: UploadFile = File(...), video_contex
             parsed_video_context = {}
     try:
         await run_in_threadpool(save_upload_file, file, saved_path)
-        classifier = get_image_classifier()
-        base_result = await run_in_threadpool(classifier.classify_rear_end, str(saved_path))
-        result = dict(base_result) if isinstance(base_result, dict) else {"raw": base_result}
+        result = await run_in_threadpool(analyze_image_with_yolo, str(saved_path))
         if parsed_video_context:
             result.setdefault("video_context", parsed_video_context)
             for key in ("accident_type", "type_confidence", "evidence_consistency_score"):

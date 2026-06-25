@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import base64
@@ -278,6 +278,166 @@ def get_image_classifier():
 
     _image_classifier = AccidentClassifier()
     return _image_classifier
+
+
+def analyze_image_with_yolo(image_path: str) -> Dict[str, Any]:
+    """使用 YOLO 模型分析单张事故图片，返回结构化证据。"""
+    import cv2
+
+    model = get_model()
+    img = cv2.imread(image_path)
+    if img is None:
+        return {
+            "module": "yolo_image_evidence",
+            "error": f"无法读取图片: {image_path}",
+            "vehicle_count": 0,
+            "rear_end_supported": False,
+            "rear_end_likelihood": 0.0,
+            "single_image_liability_trust_score": 0.0,
+            "confidence": 0.0,
+            "suitable_for_assessment": False,
+            "quality": {"quality_score": 0.0, "hard_reject": True, "reject_reasons": ["image_read_failed"]},
+        }
+
+    h, w = img.shape[:2]
+    results = model(img, conf=YOLO_CONF, verbose=False)
+
+    vehicles = []
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            if cls_id in VEHICLE_CLASS_IDS:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                conf = float(box.conf[0])
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+                area = (x2 - x1) * (y2 - y1)
+                vehicles.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "center": [cx, cy],
+                    "area": area,
+                    "confidence": conf,
+                    "class_id": cls_id,
+                    "width": x2 - x1,
+                    "height": y2 - y1,
+                })
+
+    vehicle_count = len(vehicles)
+    image_area = w * h
+
+    # 如果检测到的车辆少于 2 辆，无法判断追尾关系
+    if vehicle_count < 2:
+        return {
+            "module": "yolo_image_evidence",
+            "vehicle_count": vehicle_count,
+            "vehicles": vehicles,
+            "rear_end_supported": False,
+            "rear_end_likelihood": 0.0,
+            "single_image_liability_trust_score": 0.1,
+            "confidence": 0.1,
+            "accident_type": "unknown",
+            "suitable_for_assessment": False,
+            "image_count": 1,
+            "suitable_image_count": 0,
+            "feature_scores": {},
+            "consistency": {"evidence_consistency_score": 0.0, "consistency_label": "insufficient_vehicles"},
+            "quality": {"quality_score": 0.5, "hard_reject": False, "reject_reasons": []},
+            "role_tendency": "unknown",
+            "decision_hint": "需要更多车辆目标才能分析",
+            "decision_text": "",
+            "reason": f"仅检测到 {vehicle_count} 辆车，无法判断事故关系",
+        }
+
+    # 按垂直位置排序（上方车辆在前，下方车辆在后）
+    vehicles_sorted = sorted(vehicles, key=lambda v: v["center"][1])
+
+    # 分析前后车关系
+    front_vehicles = vehicles_sorted[:min(3, len(vehicles_sorted))]
+    rear_vehicles = vehicles_sorted[-min(3, len(vehicles_sorted)):]
+
+    # 计算车辆间重叠度来判断是否在同车道
+    def overlap_ratio(b1, b2):
+        x_overlap = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+        if x_overlap <= 0:
+            return 0.0
+        min_w = min(b1[2] - b1[0], b2[2] - b2[0])
+        return x_overlap / min_w if min_w > 0 else 0.0
+
+    # 找有水平重叠的前后车对
+    rear_end_pairs = []
+    for front in front_vehicles:
+        for rear in rear_vehicles:
+            if front is rear:
+                continue
+            if rear["center"][1] > front["center"][1]:  # rear is below front
+                overlap = overlap_ratio(front["bbox"], rear["bbox"])
+                if overlap > 0.3:
+                    dy = rear["center"][1] - front["center"][1]
+                    y_overlap = max(0, min(front["bbox"][3], rear["bbox"][3]) - max(front["bbox"][1], rear["bbox"][1]))
+                    rear_end_pairs.append({
+                        "front_vehicle": front,
+                        "rear_vehicle": rear,
+                        "horizontal_overlap": round(overlap, 4),
+                        "vertical_distance": round(dy, 2),
+                        "vertical_overlap": round(y_overlap, 2),
+                    })
+
+    # 计算追尾支持度
+    has_rear_end_pair = len(rear_end_pairs) > 0
+    if has_rear_end_pair:
+        best_pair = max(rear_end_pairs, key=lambda p: p["horizontal_overlap"])
+        rear_end_likelihood = min(best_pair["horizontal_overlap"] * 0.9, 0.95)
+        trust_score = min(0.5 + rear_end_likelihood * 0.4, 0.9)
+        accident_type = "rear_end"
+        consistency_label = "rear_end_supported"
+        decision_hint = "检测到前后车追尾空间关系"
+        reason = f"检测到 {len(rear_end_pairs)} 对可能的前后车关系"
+    else:
+        rear_end_likelihood = max(0.05, min(vehicle_count * 0.1, 0.3))
+        trust_score = 0.3
+        accident_type = "unknown"
+        consistency_label = "no_rear_end_relation"
+        decision_hint = "未检测到明显追尾空间关系"
+        reason = f"检测到 {vehicle_count} 辆车，但无显著前后车水平重叠"
+
+    return {
+        "module": "yolo_image_evidence",
+        "module_positioning": "single_image_yolo_detection",
+        "vehicle_count": vehicle_count,
+        "vehicles": vehicles,
+        "rear_end_supported": has_rear_end_pair,
+        "rear_end_likelihood": round(rear_end_likelihood, 4),
+        "rear_end_type_match_score": round(rear_end_likelihood, 4),
+        "single_image_liability_trust_score": round(trust_score, 4),
+        "confidence": round(trust_score, 4),
+        "accident_type": accident_type,
+        "sub_type": "",
+        "suitable_for_assessment": has_rear_end_pair,
+        "image_count": 1,
+        "suitable_image_count": 1 if has_rear_end_pair else 0,
+        "rear_end_pairs": rear_end_pairs,
+        "feature_scores": {
+            "vehicle_count": vehicle_count,
+            "rear_end_pair_count": len(rear_end_pairs),
+            "max_horizontal_overlap": max((p["horizontal_overlap"] for p in rear_end_pairs), default=0.0),
+        },
+        "consistency": {
+            "evidence_consistency_score": round(rear_end_likelihood, 4),
+            "consistency_label": consistency_label,
+        },
+        "quality": {
+            "quality_score": round(min(1.0, vehicle_count * 0.2 + (0.3 if has_rear_end_pair else 0.1)), 4),
+            "hard_reject": False,
+            "reject_reasons": [],
+        },
+        "role_tendency": "rear_at_fault" if has_rear_end_pair else "unknown",
+        "decision_hint": decision_hint,
+        "decision_text": "",
+        "reason": reason,
+        "evidence_summary": f"YOLO 检测到 {vehicle_count} 辆车，" + reason,
+        "damage_count": 0,
+        "damages": [],
+    }
 
 
 def _as_int(value: Any, default: int) -> int:
