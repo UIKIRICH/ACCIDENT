@@ -17,3 +17,6 @@ dist/
 # 上传的媒体文件
 backend/uploaded_videos/
 backend/uploaded_images/
+backend/keyframes/
+yolov8n.pt
+outputs/

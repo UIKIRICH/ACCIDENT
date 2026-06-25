@@ -1149,7 +1149,10 @@ ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 # ============================================================
 @app.post("/upload_video/")
 @app.post("/api/upload_video/")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(
+    file: UploadFile = File(...),
+    case_id: Optional[str] = Form(None),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="未接收到文件")
     
@@ -1182,6 +1185,7 @@ async def upload_video(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="Failed to extract keyframes.")
         
         # ========== ② 千问视频语义校验 ==========
+        # ... (千问 prompt 省略，保持不变)
         qwen_prompt = """你是交通事故视频语义校验模块。请只基于视频画面进行分析，不得编造画面外事实，不得直接进行责任认定。
 
 你的任务不是判责，而是输出视频语义观察结果，用于后续规则推理和人工复核。
@@ -1244,12 +1248,81 @@ async def upload_video(file: UploadFile = File(...)):
         fusion_result = fused_packet.get("fusion_result", {})
         print(f"[DEBUG] 融合完成: accepted_type={fusion_result.get('accepted_accident_type', 'unknown')}, conflict={fusion_result.get('conflict_detected')}")
         
-        # ========== ④ 保存融合证据包（暂不存数据库，避免 NameError） ==========
-        # 如需保存到数据库，请实现 _save_fused_evidence 函数
-        print("[DEBUG] 融合证据包已生成")
+        # ========== ④ 写入数据库：自动创建案件 + 保存证据记录 ==========
+        import hashlib
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 自动创建案件（如果没有传入 case_id）
+        if not case_id:
+            case_id = f"ACC-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:4].upper()}"
+            accident_type_map = {
+                'rear_end': '追尾', 'side_collision': '侧向碰撞',
+                'lane_change_or_cut_in': '变道/切入', 'head_on': '正面碰撞'
+            }
+            accident_type_cn = accident_type_map.get(yolo_result.get('accident_type', 'unknown'), '事故')
+            create_case({
+                "id": case_id,
+                "title": f"视频上传-{accident_type_cn}事故",
+                "accident_type": accident_type_cn,
+                "status": "待分析",
+                "description": f"视频 {saved_name} 上传后自动创建，经 YOLO 检测为 {accident_type_cn}（置信度 {yolo_result.get('type_confidence', 0):.0%}）",
+                "priority": "高",
+            })
+            print(f"[DB] 自动创建案件: {case_id}")
+        
+        # 计算视频文件 hash
+        video_hash = hashlib.md5(saved_path.read_bytes()).hexdigest() if saved_path.exists() else ""
+        
+        # 保存视频证据记录
+        video_evidence = create_evidence_record(case_id, {
+            "evidence_type": "video",
+            "file_path": f"backend/uploaded_videos/{saved_name}",
+            "file_name": saved_name,
+            "file_size": file_size,
+            "file_hash": video_hash,
+            "analysis_status": "completed",
+            "related_stage": "video-processing",
+            "metadata": {
+                "duration": yolo_result.get("impact_time", 0),
+                "vehicle_count": yolo_result.get("vehicle_count", 0),
+                "accident_type": yolo_result.get("accident_type", ""),
+                "type_confidence": yolo_result.get("type_confidence", 0),
+            }
+        })
+        video_ev_id = video_evidence.get("evidence_id")
+        print(f"[DB] 保存视频证据记录 ID={video_ev_id} -> {case_id}")
+        
+        # 保存关键帧证据记录
+        for i, kf in enumerate(keyframes):
+            thumb_url = kf.get("thumb_url", "")
+            # 从 thumb_url 提取文件名（如 /keyframes/xxx_kf91_0_abc123.jpg）
+            frame_name = thumb_url.rsplit("/", 1)[-1] if "/" in thumb_url else thumb_url
+            frame_path = f"keyframes/{frame_name}"
+            create_evidence_record(case_id, {
+                "evidence_type": "keyframe",
+                "file_path": frame_path,
+                "file_name": frame_name,
+                "file_size": 0,
+                "file_hash": "",
+                "analysis_status": "completed",
+                "related_stage": "video-processing",
+                "metadata": {
+                    "stage": kf.get("stage", ""),
+                    "time": kf.get("time", 0),
+                    "score": kf.get("score", 0),
+                    "purpose": kf.get("purpose", ""),
+                    "parent_video_evidence_id": video_ev_id,
+                }
+            })
+        print(f"[DB] 保存 {len(keyframes)} 条关键帧证据记录 -> {case_id}")
+        
+        # 保存融合证据包
+        _save_fused_evidence(case_id, fused_packet)
+        print(f"[DB] 保存融合证据包 -> {case_id}")
         
         # ========== ⑤ 返回结果 ==========
         return {
+            "case_id": case_id,
             "video": f"/uploaded_videos/{saved_name}",
             "model_version": yolo_result.get("model_version", MODEL_VERSION),
             "impact_time": yolo_result["impact_time"],
@@ -2350,6 +2423,8 @@ app.mount("/keyframes", StaticFiles(directory=str(KEYFRAME_DIR)), name="keyframe
 UPLOADED_VIDEOS_DIR = BASE_DIR / "backend" / "uploaded_videos"
 UPLOADED_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploaded_videos", StaticFiles(directory=str(UPLOADED_VIDEOS_DIR)), name="uploaded_videos")
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 # ---------------------------------------------------------------------------
 # 生产模式：如果 dist/ 存在，自动托管前端静态文件

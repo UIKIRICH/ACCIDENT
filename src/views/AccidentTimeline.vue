@@ -288,19 +288,57 @@ function parseTimeLabel(label) {
   return 0
 }
 
+// ── 将证据 file_path 转换为可访问的 URL ──
+// 后端静态文件映射: /keyframes -> backend/keyframes/, /uploaded_videos -> backend/uploaded_videos/, /uploads -> uploads/
+function filePathToUrl(filePath) {
+  if (!filePath) return null
+  const p = String(filePath).replace(/\\/g, '/')
+  // 已经是完整 URL
+  if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('/')) {
+    return p
+  }
+  // uploads/cases/... 保留完整相对路径
+  if (p.startsWith('uploads/')) {
+    return `/${p}`
+  }
+  // 提取文件名
+  const basename = p.split('/').pop()
+  if (!basename) return null
+  // backend/uploaded_videos/... -> /uploaded_videos/...
+  if (p.includes('uploaded_videos')) {
+    return `/uploaded_videos/${basename}`
+  }
+  // 关键帧图片
+  if (p.includes('keyframe') || p.includes('keyframes') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(p)) {
+    return `/keyframes/${basename}`
+  }
+  // 上传的图片
+  if (p.includes('uploaded_images') || p.includes('uploaded')) {
+    return `/uploaded_images/${basename}`
+  }
+  // 根据扩展名判断
+  if (/\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(p)) {
+    return `/keyframes/${basename}`
+  }
+  // 兜底：直接返回路径
+  return p.startsWith('/') ? p : `/${p}`
+}
+
 // ── 从证据中提取关键帧图片 ──
 function extractKeyframes(evidences) {
   const frames = []
   ;(evidences || []).forEach(ev => {
     const type = String(ev.evidence_type || ev.type || '').toLowerCase()
-    const isFrame =
+    const filePath = ev.file_path || ''
+    const isImageType =
       type.includes('frame') ||
       type.includes('keyframe') ||
       type.includes('关键帧') ||
       type.includes('image') ||
-      type.includes('图片')
-    const url = ev.frame_url || ev.url || ev.thumbnail || ev.file_url
-    if (isFrame || url) {
+      type.includes('图片') ||
+      /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(filePath)
+    const url = filePathToUrl(filePath)
+    if (url && isImageType) {
       frames.push({
         url,
         name: ev.file_name || ev.name || '关键帧',
@@ -316,9 +354,11 @@ function extractKeyframes(evidences) {
 function pickFrame(frames, idx, fact) {
   if (!frames.length) return null
   // 优先使用事实自带的帧引用
-  if (fact?.frame_url) return fact.frame_url
-  if (fact?.frame_index != null && frames[fact.frame_index]) {
-    return frames[fact.frame_index].url
+  if (fact?.frame_url) return filePathToUrl(fact.frame_url) || fact.frame_url
+  if (fact?.keyframe_time != null && frames.length) {
+    // 如果有时间标注，尝试匹配对应帧
+    const matched = frames.find(f => f.time === fact.keyframe_time)
+    if (matched) return matched.url
   }
   // 按索引轮询匹配
   const frame = frames[idx % frames.length]

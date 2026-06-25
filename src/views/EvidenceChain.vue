@@ -93,9 +93,24 @@
                 <div class="item-meta" v-if="ev.content || ev.description">{{ ev.content || ev.description }}</div>
                 <div class="item-path" v-if="ev.file_path">路径：{{ ev.file_path }}</div>
                 <div class="item-time" v-if="ev.created_at">{{ ev.created_at }}</div>
+                <!-- 视频关联的关键帧图片预览 -->
+                <div v-if="ev.keyframe_url" class="keyframe-thumb">
+                  <img :src="ev.keyframe_url" alt="关键帧预览" class="thumb-img" @error="e => e.target.style.display='none'" />
+                </div>
               </div>
             </div>
-            <p v-else class="empty-text">暂无视频证据</p>
+            <!-- 同时展示 imageEvidences 中的关键帧图片 -->
+            <div v-if="imageEvidences.length" class="detail-list" style="margin-top: 12px;">
+              <div class="block-label" style="margin-bottom: 8px;">视频关键帧</div>
+              <div v-for="(ev, i) in imageEvidences" :key="'kf-'+i" class="detail-item">
+                <div class="item-name">{{ ev.file_name || ev.name || `关键帧 ${i + 1}` }}</div>
+                <div class="keyframe-thumb" v-if="ev.preview_url">
+                  <img :src="ev.preview_url" alt="关键帧" class="thumb-img" @error="e => { e.target.style.display='none'; e.target.nextElementSibling.style.display='block'; }" />
+                  <span class="thumb-fallback" style="display:none; font-size:12px; color:var(--text-muted); margin-top:8px;">图片加载失败</span>
+                </div>
+              </div>
+            </div>
+            <p v-if="!videoEvidences.length && !imageEvidences.length" class="empty-text">暂无视频证据</p>
           </template>
 
           <!-- 视频语义校验（千问 + 融合门控） -->
@@ -250,6 +265,10 @@
                 <div class="item-meta" v-if="ev.content || ev.description">{{ ev.content || ev.description }}</div>
                 <div class="item-path" v-if="ev.file_path">路径：{{ ev.file_path }}</div>
                 <div class="item-time" v-if="ev.created_at">{{ ev.created_at }}</div>
+                <div class="keyframe-thumb" v-if="ev.preview_url">
+                  <img :src="ev.preview_url" alt="图片证据" class="thumb-img" @error="e => { e.target.style.display='none'; e.target.nextElementSibling.style.display='block'; }" />
+                  <span class="thumb-fallback" style="display:none; font-size:12px; color:var(--text-muted); margin-top:8px;">图片加载失败</span>
+                </div>
               </div>
             </div>
             <p v-else class="empty-text">暂无图片证据</p>
@@ -464,24 +483,71 @@ function formatConfidence(val) {
   return (num <= 1 ? num * 100 : num).toFixed(1) + '%'
 }
 
+// ── 将证据 file_path 转换为可访问的 URL ──
+// 后端静态文件映射:
+//   /keyframes       -> backend/keyframes/
+//   /uploaded_videos -> backend/uploaded_videos/
+//   /uploads         -> uploads/
+function filePathToUrl(filePath) {
+  if (!filePath) return null
+  const p = String(filePath).replace(/\\/g, '/')
+  if (p.startsWith('http://') || p.startsWith('https://') || p.startsWith('/')) {
+    return p
+  }
+  // uploads/cases/... 保留完整相对路径
+  if (p.startsWith('uploads/')) {
+    return `/${p}`
+  }
+  const basename = p.split('/').pop()
+  if (!basename) return null
+  // backend/uploaded_videos/... -> /uploaded_videos/...
+  if (p.includes('uploaded_videos')) {
+    return `/uploaded_videos/${basename}`
+  }
+  if (p.includes('keyframe') || p.includes('keyframes') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(p)) {
+    return `/keyframes/${basename}`
+  }
+  if (p.includes('uploaded_images') || p.includes('uploaded')) {
+    return `/uploaded_images/${basename}`
+  }
+  if (/\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(p)) {
+    return `/keyframes/${basename}`
+  }
+  return `/${p}`
+}
+
 // ── 证据分类辅助函数 ──
 const getEvidenceType = (e) => String(e.evidence_type || e.type || '').toLowerCase()
 const isVideoEvidence = (e) => {
   const t = getEvidenceType(e)
-  return t.includes('video') || t.includes('视频')
+  const fp = String(e.file_path || '')
+  return t.includes('video') || t.includes('视频') || /\.(mp4|avi|mov|webm|mkv|flv)$/i.test(fp)
 }
 const isImageEvidence = (e) => {
   const t = getEvidenceType(e)
-  return t.includes('image') || t.includes('图片') || t.includes('photo')
+  const fp = String(e.file_path || '')
+  return t.includes('image') || t.includes('图片') || t.includes('photo') ||
+    t.includes('keyframe') || t.includes('关键帧') || t.includes('frame') ||
+    /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(fp)
 }
 const isTextEvidence = (e) => {
   const t = getEvidenceType(e)
   return t.includes('text') || t.includes('文本') || t.includes('描述')
 }
 
-// 按类型分类的证据
-const videoEvidences = computed(() => evidences.value.filter(isVideoEvidence))
-const imageEvidences = computed(() => evidences.value.filter(isImageEvidence))
+// 按类型分类的证据（附加预览 URL）
+const videoEvidences = computed(() =>
+  evidences.value.filter(isVideoEvidence).map(e => ({
+    ...e,
+    keyframe_url: filePathToUrl(e.keyframe_path || e.thumbnail_path || '')
+  }))
+)
+const imageEvidences = computed(() =>
+  evidences.value.filter(isImageEvidence).map(e => ({
+    ...e,
+    preview_url: filePathToUrl(e.file_path)
+  }))
+)
 const textEvidences = computed(() => evidences.value.filter(isTextEvidence))
 
 // 责任建议中的车辆责任分配
@@ -1588,6 +1654,30 @@ onMounted(async () => {
   font-size: var(--text-sm);
   text-align: center;
   padding: var(--space-8) 0;
+}
+
+/* 关键帧缩略图 */
+.keyframe-thumb {
+  margin-top: var(--space-3);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #1a1a1a;
+  border: 1px solid var(--border-light);
+}
+
+.thumb-img {
+  width: 100%;
+  display: block;
+  object-fit: cover;
+  max-height: 240px;
+  border-radius: var(--radius-md);
+  transition: opacity 0.3s ease;
+}
+
+.thumb-fallback {
+  display: block;
+  padding: var(--space-4);
+  text-align: center;
 }
 
 /* ── 响应式：小屏幕纵向排列 ── */
