@@ -1293,8 +1293,8 @@ def write_readme(run_dir: Path) -> None:
         "## Reproduce\n"
         "```bash\n"
         "python backend/scripts/run_decision_chain_transfer_baselines.py \\\n"
-        "  --root \"D:\\\\computer code\\\\accident_app\" \\\n"
-        "  --paper-root \"D:\\\\computer code\\\\paper\\\\acmart-primary\\\\acmart-primary\"\n"
+        "  --root . \\\n"
+        "  --paper-root ./paper/acmart-primary/acmart-primary\n"
         "```\n\n"
         "Outputs:\n"
         "- run_config.yaml\n"
@@ -1427,7 +1427,7 @@ def write_final_report(
     lines.append("")
     lines.append("## 8) Repro Command")
     lines.append("```bash")
-    lines.append("python backend/scripts/run_decision_chain_transfer_baselines.py --root \"D:\\computer code\\accident_app\" --paper-root \"D:\\computer code\\paper\\acmart-primary\\acmart-primary\"")
+    lines.append("python backend/scripts/run_decision_chain_transfer_baselines.py --root . --paper-root ./paper/acmart-primary/acmart-primary")
     lines.append("```")
     lines.append("")
     lines.append("## 9) Direct Q&A")
@@ -1455,8 +1455,8 @@ def write_final_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run decision-chain transfer baselines under fixed audited gates.")
-    parser.add_argument("--root", default=r"D:\computer code\accident_app")
-    parser.add_argument("--paper-root", default=r"D:\computer code\paper\acmart-primary\acmart-primary")
+    parser.add_argument("--root", default=str(Path(__file__).resolve().parent.parent.parent))
+    parser.add_argument("--paper-root", default="")
     parser.add_argument("--skip-dann", action="store_true")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for adaptation baseline training/alignment runs.")
     args = parser.parse_args()

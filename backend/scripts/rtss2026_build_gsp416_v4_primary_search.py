@@ -997,22 +997,22 @@ def main() -> None:
     parser.add_argument(
         "--v2_low_fallback_trace",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v2_selection_20260522_115936\GSP416_LOW_FALLBACK_action_trace.csv",
+        default="",
     )
     parser.add_argument(
         "--v3_script",
         type=str,
-        default=r"D:\computer code\accident_app\backend\scripts\rtss2026_build_gsp416_canonical_v3_stronger_family.py",
+        default="",
     )
     parser.add_argument(
         "--v3_candidates_csv",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v3_stronger_family_20260522_132819\01_v3_sweep_candidates.csv",
+        default="",
     )
     parser.add_argument(
         "--v3_report_md",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v3_stronger_family_20260522_132819\RTSS2026_GSP416_CANONICAL_V3_STRONGER_FAMILY_MASTER_REPORT.md",
+        default="",
     )
     args = parser.parse_args()
 

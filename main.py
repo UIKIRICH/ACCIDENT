@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depends, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -1097,13 +1097,28 @@ async def api_flow_step(data: FlowStepRequest):
     return {"success": True, "message": "流程步进成功", "route": "/" + data.step}
 
 # ---------------------------------------------------------------------------
-# CORS 配置
+# CORS 配置（生产环境通过 CORS_ALLOW_ORIGINS 环境变量限制来源）
 # ---------------------------------------------------------------------------
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+_cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+if _cors_origins_env:
+    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+else:
+    _cors_origins = ["*"]  # 开发模式：允许所有来源
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 TEMP_DIR = BASE_DIR / "temp"
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
+
+OUTPUTS_DIR = BASE_DIR / "outputs"
+OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 UPLOADS_DIR = BASE_DIR / "uploads"
 
@@ -2332,6 +2347,18 @@ app.mount("/keyframes", StaticFiles(directory=str(KEYFRAME_DIR)), name="keyframe
 UPLOADED_VIDEOS_DIR = BASE_DIR / "backend" / "uploaded_videos"
 UPLOADED_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploaded_videos", StaticFiles(directory=str(UPLOADED_VIDEOS_DIR)), name="uploaded_videos")
+
+# ---------------------------------------------------------------------------
+# 生产模式：如果 dist/ 存在，自动托管前端静态文件
+# 若使用 Nginx 反向代理，设置 SERVE_STATIC=false 跳过
+# ---------------------------------------------------------------------------
+_serve_static = os.getenv("SERVE_STATIC", "true").strip().lower() not in ("false", "0", "no")
+DIST_DIR = BASE_DIR / "dist"
+if _serve_static and DIST_DIR.exists() and (DIST_DIR / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="frontend")
+    print("[INFO] Production mode: serving frontend from dist/")
+elif not _serve_static:
+    print("[INFO] SERVE_STATIC=false, frontend served by external proxy (e.g. Nginx)")
 
 if __name__ == "__main__":
     import uvicorn

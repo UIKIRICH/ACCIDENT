@@ -516,7 +516,7 @@ def lobo(rows: List[Dict[str, Any]], group_field: str) -> List[Dict[str, Any]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RTSS2026 Data Layer Upgrade Pipeline")
-    parser.add_argument("--root", type=str, default=r"D:\computer code\accident_app")
+    parser.add_argument("--root", type=str, default=str(Path(__file__).resolve().parent.parent.parent))
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--seed", type=int, default=20260523)
     parser.add_argument("--duration_sec", type=int, default=300)
@@ -524,12 +524,12 @@ def main() -> None:
     parser.add_argument(
         "--canonical_416",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_trace_rebuild_from_sources_20260522_095027\canonical_416_base_table.csv",
+        default="",
     )
     parser.add_argument(
         "--v2_low_fallback_trace",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v2_selection_20260522_115936\GSP416_LOW_FALLBACK_action_trace.csv",
+        default="",
     )
     args = parser.parse_args()
 

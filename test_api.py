@@ -13,7 +13,7 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
     import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "http://127.0.0.1:8001"
 HEADERS = {}
 CASE_ID = None
 TASK_ID = None
@@ -120,7 +120,7 @@ r = test("PUT /api/cases/{id}/status (legal: draft→待分析)", "put",
 # ================================================================
 r = test("POST /api/cases/{id}/evidences", "post",
          f"/api/cases/{CASE_ID}/evidences", 200,
-         json_data={"evidence_type": "image", "file_path": "/tmp/test.jpg"})
+         json_data={"evidence_type": "image", "file_path": "test_data/test.jpg"})
 
 # ================================================================
 # Test 8: 查询证据列表
@@ -215,7 +215,7 @@ if r:
 if loop_case_id:
     # 上传证据
     test("19b: 添加证据", "post", f"/api/cases/{loop_case_id}/evidences", 200,
-         json_data={"evidence_type": "image", "file_path": "/tmp/loop_test.jpg"})
+         json_data={"evidence_type": "image", "file_path": "test_data/loop_test.jpg"})
     # 创建分析任务
     r = test("19c: 创建分析任务", "post", "/api/tasks/analysis", 200,
              json_data={"case_id": loop_case_id, "task_type": "full_analysis"})
@@ -296,7 +296,7 @@ if r:
     print(f"      → 上传前证据数: {count_before}")
 # 上传新证据
 test("22b: 上传新证据", "post", f"/api/cases/{CASE_ID}/evidences", 200,
-     json_data={"evidence_type": "image", "file_path": "/tmp/count_test.jpg"})
+     json_data={"evidence_type": "image", "file_path": "test_data/count_test.jpg"})
 # 再次获取证据数量
 r = test("22c: 获取上传后证据数", "get", f"/api/cases/{CASE_ID}/evidences", 200)
 count_after = 0

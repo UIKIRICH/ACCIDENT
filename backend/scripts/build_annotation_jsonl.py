@@ -32,7 +32,7 @@ def make_record(video_path: Path, base_dir: Path, split: str) -> Dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build annotation jsonl from a video directory.")
-    parser.add_argument("--videos-dir", required=True, help="Video folder to scan (e.g. D:\\computer code\\videos\\train)")
+    parser.add_argument("--videos-dir", required=True, help="Video folder to scan (e.g. ./backend/videos/train)")
     parser.add_argument("--base-dir", default="", help="Base dir for relative path in `video` field; defaults to parent of videos-dir")
     parser.add_argument("--split", default="train", help="Split name")
     parser.add_argument("--out", required=True, help="Output jsonl path")

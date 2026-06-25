@@ -714,7 +714,7 @@ def bucket_metrics(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def maybe_load_old_gsp_trace(path: Path) -> Optional[List[Dict[str, Any]]]:
-    if not path.exists():
+    if not path.name or not path.exists() or not path.is_file():
         return None
     rows = read_csv(path)
     need = {"gt_type", "action", "final_pred", "board_id", "bucket_id"}
@@ -736,7 +736,7 @@ def main() -> None:
     parser.add_argument("--duration_sec", type=int, default=300)
     parser.add_argument(
         "--old_gsp_trace",
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_selection_20260522_113526\GSP416_CANONICAL_action_trace.csv",
+        default="",
     )
     args = parser.parse_args()
 

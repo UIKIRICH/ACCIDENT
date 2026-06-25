@@ -1,4 +1,4 @@
-﻿import csv
+import csv
 import json
 import math
 import subprocess
@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
-ROOT = Path(r"D:\computer code\accident_app")
+ROOT = Path(__file__).resolve().parent.parent.parent
 OUT_BASE = ROOT / "outputs"
 TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 

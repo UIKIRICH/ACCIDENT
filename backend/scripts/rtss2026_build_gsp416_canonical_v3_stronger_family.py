@@ -838,12 +838,12 @@ def main() -> None:
     parser.add_argument(
         "--v2_low_fallback_trace",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v2_selection_20260522_115936\GSP416_LOW_FALLBACK_action_trace.csv",
+        default="",
     )
     parser.add_argument(
         "--v2_balanced_trace",
         type=str,
-        default=r"D:\computer code\accident_app\outputs\rtss2026_gsp416_canonical_v2_selection_20260522_115936\GSP416_BALANCED_action_trace.csv",
+        default="",
     )
     args = parser.parse_args()
 

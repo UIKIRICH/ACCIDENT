@@ -1,5 +1,4 @@
 # Focus Chain List for Task 1781144190327
-C:\Users\晟宇-Zhou\AppData\Roaming\Code\User\globalStorage\saoudrizwan.// claude-dev\tasks\1781144190327\focus_chain_taskid_1781144190327.md
 <!-- Edit this markdown file to update your focus chain list -->
 <!-- Use the format: - [ ] for incomplete items and - [x] for completed items -->
 

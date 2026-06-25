@@ -1,8 +1,8 @@
 from pathlib import Path
 import json
 
-# 项目根目录：按你现在的仓库路径来
-PROJECT_ROOT = Path(r"D:\computer code\accident_app")
+# 项目根目录（相对于当前脚本向上两级：scripts -> backend -> project root）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # 视频目录
 VIDEOS_ROOT = PROJECT_ROOT / "backend" / "videos"
