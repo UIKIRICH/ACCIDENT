@@ -104,7 +104,7 @@ def _call_qwen_video_analysis(video_path: Path, prompt: str) -> Dict[str, Any]:
         headers["X-DashScope-WorkSpace"] = ws_id
     
     try:
-        response = requests.post(api_url, json=payload, headers=headers, timeout=120)
+        response = requests.post(api_url, json=payload, headers=headers, timeout=180)
         if response.status_code == 200:
             return response.json()
         else:
@@ -226,6 +226,13 @@ def fuse_video_evidence(
         detector = detector_output or {}
         qwen = qwen_semantic_check or {}
         
+        # 兜底逻辑：如果 keyframe_count 为 0，尝试从 detector_output 中提取
+        if keyframe_count == 0:
+            keyframes = detector.get("keyframes", [])
+            keyframe_count = len(keyframes) if isinstance(keyframes, list) else 0
+            if keyframe_count > 0:
+                print(f"[DEBUG] 融合函数: 从 detector_output 兜底提取到 {keyframe_count} 个关键帧")
+        
         print("[DEBUG] 融合函数: 开始提取字段...")
         
         detector_type = str(detector.get("accident_type") or detector.get("model_pred_type") or "unknown")
@@ -246,12 +253,14 @@ def fuse_video_evidence(
         print(f"[DEBUG] 融合: detector_type={detector_type}, conf={detector_confidence}, rear={detector_rear_end_support}")
         print(f"[DEBUG] 融合: qwen_type={qwen_semantic_type}, qwen_conf={qwen_confidence}, camera={camera_view}")
         
-        # Vehicle count
+        # Vehicle count (Task 2: Fix estimated_involved_vehicle_count logic)
         visible_external = int(qwen.get("visible_external_vehicle_count", 0))
-        ego_present = bool(qwen.get("ego_vehicle_present", False))
-        if camera_view == "dashcam_ego_view" and not ego_present:
+        if camera_view == "dashcam_ego_view":
             ego_present = True
-        estimated_involved = visible_external + (1 if ego_present else 0)
+            estimated_involved = visible_external + 1
+        else:
+            ego_present = False
+            estimated_involved = visible_external
         
         # Type decision
         type_decision_status = "accepted"
@@ -358,13 +367,19 @@ def fuse_video_evidence(
             final_status = "needs_manual_review"
             status_reason_parts.append(f"存在关键证据缺失: {', '.join(critical_missing)}")
         
-        if manual_review_required and final_status != "insufficient_evidence":
-            final_status = "needs_manual_review"
-            if not status_reason_parts:
-                status_reason_parts.append("置信度不足或存在其他需人工复核的因素")
-        
-        if final_status == "evidence_ready" and not status_reason_parts:
-            status_reason_parts.append("证据一致且充分，可进入责任推理")
+        # Task 3: Low confidence consistency confirmation rule
+        if detector_confidence < 0.5 and not conflict_detected and qwen_confidence >= 0.6 and final_status != "insufficient_evidence":
+            final_status = "evidence_ready"
+            status_reason = "检测模型置信度较低，但千问语义校验结果一致且证据完整，可进入责任推理"
+            status_reason_parts = [status_reason]
+        else:
+            if manual_review_required and final_status != "insufficient_evidence":
+                final_status = "needs_manual_review"
+                if not status_reason_parts:
+                    status_reason_parts.append("置信度不足或存在其他需人工复核的因素")
+            
+            if final_status == "evidence_ready" and not status_reason_parts:
+                status_reason_parts.append("证据一致且充分，可进入责任推理")
         
         status_reason = "；".join(status_reason_parts) if status_reason_parts else "未知状态"
         
@@ -1136,6 +1151,11 @@ async def upload_video(file: UploadFile = File(...)):
         yolo_result = await run_in_threadpool(extract_keyframes, saved_path)
         print(f"[DEBUG] YOLO 完成, 类型: {yolo_result.get('accident_type', 'unknown')}, 置信度: {yolo_result.get('type_confidence', 0.0)}")
         keyframes = yolo_result.get("keyframes", [])
+
+        # ========== 移除 Base64 图片数据，减小响应体大小 ==========
+        for kf in keyframes:
+            kf.pop("image_url", None)
+        # =========================================================
         if not keyframes:
             raise HTTPException(status_code=500, detail="Failed to extract keyframes.")
         
@@ -1197,7 +1217,7 @@ async def upload_video(file: UploadFile = File(...)):
         
         # ========== ③ 融合检测结果 ==========
         print("[DEBUG] 开始融合检测结果...")
-        fused = fuse_video_evidence(yolo_result, qwen_semantic)
+        fused = fuse_video_evidence(yolo_result, qwen_semantic, keyframe_count=len(keyframes))
         fused_packet = fused.get("fused_evidence_packet", fused)
         fusion_result = fused_packet.get("fusion_result", {})
         print(f"[DEBUG] 融合完成: accepted_type={fusion_result.get('accepted_accident_type', 'unknown')}, conflict={fusion_result.get('conflict_detected')}")
@@ -1303,6 +1323,7 @@ async def api_video_semantic_check(case_id: str, data: VideoSemanticCheckRequest
 class FuseVideoEvidenceRequest(BaseModel):
     detector_output: Dict[str, Any] = {}
     qwen_semantic_check: Dict[str, Any] = {}
+    keyframe_count: int = 0
 
 @app.post("/api/cases/{case_id}/fuse-video-evidence")
 async def api_fuse_video_evidence(case_id: str, data: FuseVideoEvidenceRequest):
@@ -1312,8 +1333,9 @@ async def api_fuse_video_evidence(case_id: str, data: FuseVideoEvidenceRequest):
         print(f"[DEBUG] 融合证据: case_id={case_id}")
         print(f"[DEBUG] 检测模型输出: {json.dumps(data.detector_output, ensure_ascii=False)[:200]}")
         print(f"[DEBUG] 千问语义校验: {json.dumps(data.qwen_semantic_check, ensure_ascii=False)[:200]}")
+        print(f"[DEBUG] 关键帧数量: {data.keyframe_count}")
         
-        fused = fuse_video_evidence(data.detector_output, data.qwen_semantic_check)
+        fused = fuse_video_evidence(data.detector_output, data.qwen_semantic_check, keyframe_count=data.keyframe_count)
         
         try:
             _save_fused_evidence(case_id, fused)
@@ -1511,7 +1533,44 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
             # 如果 raw_content 为空，尝试从 qwen_semantic_check 获取
             qwen_raw_text = qwen_check.get("raw_content", "")
 
-    # ========== 4. 构建融合摘要（简短的决策信息） ==========
+    # ========== 4. 构建系统门控摘要（Task 1: 最前面，强制约束） ==========
+    gateway_summary_parts = []
+    gateway_summary_parts.append("【系统门控约束】")
+    gateway_summary_parts.append("Dify 必须以\"系统门控摘要\"为最高优先级依据。")
+    gateway_summary_parts.append("YOLO 原始输出和千问语义校验输出仅用于解释和溯源。")
+    gateway_summary_parts.append(f"若门控状态为 \"needs_manual_review\" 或 \"insufficient_evidence\"：")
+    gateway_summary_parts.append("  - 不得输出明确责任认定")
+    gateway_summary_parts.append("  - 只能输出证据冲突说明、缺失证据清单和人工复核建议")
+    gateway_summary_parts.append(f"若门控状态为 \"evidence_ready\"：")
+    gateway_summary_parts.append("  - 可基于融合结果生成责任说明")
+    gateway_summary_parts.append("  - 责任说明必须基于事实，不得编造信息")
+    gateway_summary_parts.append("")
+    
+    # 门控机制触发情况（Task 6）
+    gateway_summary_parts.append("【门控机制触发情况】")
+    # 补偿型门控
+    if cam_ctx.get("camera_view") == "dashcam_ego_view":
+        gateway_summary_parts.append("补偿型门控：已触发（原因：行车记录仪视角，自车作为隐式参与方计入涉事车辆总数）")
+    else:
+        gateway_summary_parts.append("补偿型门控：未触发（原因：非行车记录仪视角）")
+    # 冲突型门控
+    if fusion_result.get("conflict_detected"):
+        gateway_summary_parts.append(f"冲突型门控：已触发（原因：{qwen_check.get('conflict_reasons', ['检测到类型冲突'])[0]}）")
+    else:
+        gateway_summary_parts.append("冲突型门控：未触发（原因：检测模型与千问语义校验结果一致）")
+    # 证据不足门控
+    critical_missing = fusion_result.get("keyframe_video_consistency", {}).get("missing_items", [])
+    key_evidence_types = {"碰撞部位", "双方车辆关系", "事故后位置", "collision_point", "vehicle_relationship", "post_crash_position"}
+    has_critical_missing = any(any(kw in item for kw in key_evidence_types) for item in critical_missing)
+    if has_critical_missing:
+        gateway_summary_parts.append(f"证据不足门控：已触发（原因：存在关键证据缺失）")
+    else:
+        gateway_summary_parts.append("证据不足门控：未触发（原因：关键证据完整）")
+    gateway_summary_parts.append("")
+    
+    gateway_summary_text = "\n".join(gateway_summary_parts)
+    
+    # 构建融合摘要（简短的决策信息）
     summary_parts = []
     summary_parts.append(f"视角: {cam_ctx.get('camera_view', 'unknown')}")
     summary_parts.append(f"自车参与: {cam_ctx.get('ego_vehicle_present', False)}")
@@ -1531,6 +1590,9 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
         summary_parts.append(f"系统操作: {fusion_result.get('system_action', 'unknown')}")
     
     summary_text = "\n".join(summary_parts)
+    
+    # Task 1: 门控摘要在最前面
+    summary_text = gateway_summary_text + summary_text
 
     # ========== 5. 追加两部分原始输出 ==========
     summary_text += "\n\n" + "=" * 60 + "\n"

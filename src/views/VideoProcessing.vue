@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="video-processing-page">
     <div class="page-header">
       <div class="header-content">
@@ -345,9 +345,8 @@ function candidateFrameUrls(rawPath) {
   const path = String(rawPath || '').trim()
   if (!path) return []
   if (/^https?:\/\//i.test(path) || path.startsWith('data:')) return [path]
-  const normalized = path.startsWith('/') ? path : `/${path}`
-  const byApi = `${API_BASE_URL_NORMALIZED}${normalized}`
-  return Array.from(new Set([byApi, normalized]))
+  // 只返回原始路径，不添加 /api 前缀
+  return [path.startsWith('/') ? path : `/${path}`]
 }
 
 function handleFrameImageError(item, event) {
@@ -600,12 +599,10 @@ const processKeyframeData = (data) => {
     return
   }
 
-  // console.log('后端返回的关键帧数据:', data)
-
-  const backendImpactSec = Number(data.impact_time  ||  0)
+  const backendImpactSec = Number(data.impact_time || 0)
   const backendVehicleCount = data.vehicle_count != null ? `${data.vehicle_count} 辆` : '2 辆'
   const backendAccidentType = String(data.accident_type || '待分析')
-  const backendTypeConfidence = Number(data.type_confidence  ||  0)
+  const backendTypeConfidence = Number(data.type_confidence || 0)
   const backendRiskLevel = String(data.risk_level || 'unknown')
   const backendCollisionPosition = collisionPositionFromType(backendAccidentType)
 
@@ -626,14 +623,10 @@ const processKeyframeData = (data) => {
     const purpose = item.purpose || purposeFromStage(stage, index, data.keyframes.length)
     const isMain = Boolean(item.is_main) || stage === 'impact'
 
+    // ========== 直接使用 thumb_url 作为图片地址 ==========
     const thumbUrl = String(item.thumb_url || '').trim()
-    const imageUrlRaw = String(item.image_url || item.image || '').trim()
-    const candidates = candidateFrameUrls(thumbUrl)
-    const imageUrl =
-      resolveBackendMediaUrl(imageUrlRaw)
-      || candidates[0]
-      || resolveBackendMediaUrl(thumbUrl)
-      || buildPlaceholderImage(`Frame ${index + 1}`, 'square')
+    const imageUrl = thumbUrl || buildPlaceholderImage(`Frame ${index + 1}`, 'square')
+    // =====================================================
 
     return {
       id: `frame-${index + 1}`,
@@ -641,7 +634,7 @@ const processKeyframeData = (data) => {
       time: sec,
       timeText: formatSeconds(sec),
       image: imageUrl,
-      imageUrlRaw,
+      imageUrlRaw: '',           // 置空，不再使用
       thumbUrlRaw: thumbUrl,
       _triedImageUrls: imageUrl ? [imageUrl] : [],
       qualityScore,
