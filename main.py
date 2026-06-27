@@ -1506,11 +1506,7 @@ from pathlib import Path
 import json
 def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any]:
     """
-    构建发送给 Dify 的输入数据。
-    主要输出 summary_text，包含：
-      - 融合摘要（视角、车辆数、冲突状态等）
-      - YOLO 原始检测结果（JSON 格式）
-      - 千问完整原始分析（自然语言段落）
+    构建发送给 Dify 的输入数据（使用模板文件）。
     """
     print("[DEBUG] _build_dify_case_inputs 被调用")
     
@@ -1519,7 +1515,7 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
     raw_image_evidence = payload.image_evidence or {}
     additional_evidence = payload.additional_evidence or ""
 
-    # ========== 1. 提取融合证据包（用于生成摘要） ==========
+    # ========== 1. 提取融合证据包 ==========
     fused_packet = raw_video_result.get("fused_evidence_packet", {})
     cam_ctx = fused_packet.get("camera_context", {})
     qwen_check = fused_packet.get("qwen_semantic_check", {})
@@ -1538,101 +1534,66 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
         "keyframe_count": len(raw_video_result.get("keyframes", []))
     }
 
-    # ========== 3. 提取千问完整原始输出（保留所有自然语言内容） ==========
+    # ========== 3. 提取千问完整原始输出 ==========
     qwen_analysis = raw_video_result.get("qwen_analysis", {})
-    qwen_raw_text = ""
+    qwen_raw_text = qwen_analysis.get("raw_content", qwen_check.get("raw_content", ""))
 
-    # 方案 A：如果有 parsed 字段，直接拼接完整段落（最准确）
-    parsed = qwen_analysis.get("parsed", {})
-    if parsed:
-        # 定义千问输出的标准章节顺序
-        sections = [
-            "视频场景分析",
-            "涉事车辆分析",
-            "事故过程还原",
-            "关键行为识别",
-            "碰撞关系分析",
-            "事故原因分析",
-            "责任推断",
-            "最终结论"
-        ]
-        for section in sections:
-            if section in parsed and parsed[section]:
-                qwen_raw_text += f"【{section}】\n{parsed[section]}\n\n"
-    else:
-        # 方案 B：从 raw_content 提取完整原文
-        raw = qwen_analysis.get("raw_content", "")
-        if raw:
-            raw = raw.strip()
-            # 移除可能的 markdown 代码块标记
-            if raw.startswith("```json"):
-                raw = raw[7:]
-            if raw.startswith("```"):
-                raw = raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-            raw = raw.strip()
-            
-            # 尝试判断是否为 JSON 字符串
-            try:
-                qwen_json = json.loads(raw)
-                # 如果是 JSON，但包含支持性观察等文本，我们还原为更可读的格式
-                # 但为了保留完整信息，我们直接将整个 JSON 转成格式化的文本
-                # 但也可以从 JSON 中提取纯文本部分
-                # 优先提取 supporting_observations 和其他文本字段
-                parts = []
-                if qwen_json.get("camera_view"):
-                    parts.append(f"视角类型：{qwen_json.get('camera_view')}")
-                if "ego_vehicle_present" in qwen_json:
-                    parts.append(f"自车参与：{'是' if qwen_json.get('ego_vehicle_present') else '否'}")
-                if qwen_json.get("visible_external_vehicle_count") is not None:
-                    parts.append(f"可见外部车辆数：{qwen_json.get('visible_external_vehicle_count')}")
-                if qwen_json.get("estimated_involved_vehicle_count") is not None:
-                    parts.append(f"估计涉事车辆数：{qwen_json.get('estimated_involved_vehicle_count')}")
-                if qwen_json.get("external_vehicle_behavior"):
-                    parts.append(f"外部车辆行为：{qwen_json.get('external_vehicle_behavior')}")
-                if qwen_json.get("semantic_accident_type_candidate"):
-                    parts.append(f"语义事故类型候选：{qwen_json.get('semantic_accident_type_candidate')}")
-                if qwen_json.get("semantic_confidence") is not None:
-                    parts.append(f"语义置信度：{qwen_json.get('semantic_confidence')}")
-                
-                # 支持性观察（详细描述）
-                obs = qwen_json.get("supporting_observations", [])
-                if obs:
-                    parts.append("\n观察描述：")
-                    for o in obs:
-                        parts.append(f"  - {o}")
-                
-                # 缺失证据
-                missing = qwen_json.get("missing_evidence", [])
-                if missing:
-                    parts.append("\n缺失证据：")
-                    for m in missing:
-                        parts.append(f"  - {m}")
-                
-                # 冲突原因
-                conflicts = qwen_json.get("conflict_reasons", [])
-                if conflicts:
-                    parts.append("\n冲突原因：")
-                    for c in conflicts:
-                        parts.append(f"  - {c}")
-                
-                if "manual_review_required" in qwen_json:
-                    parts.append(f"人工复核：{'需要' if qwen_json.get('manual_review_required') else '不需要'}")
-                
-                qwen_raw_text = "\n".join(parts)
-            except json.JSONDecodeError:
-                # 如果不是 JSON，直接当作纯文本保留
-                qwen_raw_text = raw
-        else:
-            # 如果 raw_content 为空，尝试从 qwen_semantic_check 获取
-            qwen_raw_text = qwen_check.get("raw_content", "")
+    # ========== 4. 读取 Dify 提示词模板 ==========
+    template_path = BASE_DIR / "backend" / "dify_prompt_template.txt"
+    try:
+        with open(template_path, 'r', encoding='utf-8') as f:
+            template = f.read()
+    except Exception as e:
+        print(f"[WARN] 读取 Dify 模板失败: {e}，使用默认模板")
+        template = """【系统门控摘要】
+{gateway_summary}
 
-    # ========== 4. 构建系统门控摘要（Task 1: 最前面，强制约束） ==========
+【门控状态】
+final_status: {final_status}
+rule_status: {rule_status}
+ml_label: {ml_label}
+ml_confidence: {ml_confidence}
+
+---
+
+【原始检测结果】
+
+YOLO 视频检测模型输出：
+{yolo_output}
+
+千问视频语义校验输出：
+{qwen_output}
+
+---
+
+【系统指令】
+
+你是交通事故责任分析助手。请严格遵循以下规则：
+
+1. **最高优先级**：以【系统门控摘要】和【门控状态】为最高优先级依据，不得违反。
+
+2. **溯源限制**：YOLO 原始输出和千问语义校验输出仅用于解释和溯源，不得直接作为责任认定依据。
+
+3. **门控约束**：
+   - 若门控状态为 "needs_manual_review" 或 "insufficient_evidence"：
+     * 不得输出明确责任认定
+     * 只能输出证据冲突说明、缺失证据清单和人工复核建议
+   
+   - 若门控状态为 "evidence_ready"：
+     * 可基于融合结果生成责任说明
+     * 责任说明必须基于事实，不得编造信息
+
+4. **禁止行为**：
+   - 禁止编造画面外事实
+   - 禁止在非 evidence_ready 状态下输出确定性责任认定
+"""
+    
+    # ========== 5. 构建门控摘要 ==========
     gateway_summary_parts = []
     gateway_summary_parts.append("【系统门控约束】")
     gateway_summary_parts.append("Dify 必须以\"系统门控摘要\"为最高优先级依据。")
     gateway_summary_parts.append("YOLO 原始输出和千问语义校验输出仅用于解释和溯源。")
+    final_status = fusion_result.get("final_status", "unknown")
     gateway_summary_parts.append(f"若门控状态为 \"needs_manual_review\" 或 \"insufficient_evidence\"：")
     gateway_summary_parts.append("  - 不得输出明确责任认定")
     gateway_summary_parts.append("  - 只能输出证据冲突说明、缺失证据清单和人工复核建议")
@@ -1641,53 +1602,39 @@ def _build_dify_case_inputs(payload: "DifyAccidentCaseRequest") -> Dict[str, Any
     gateway_summary_parts.append("  - 责任说明必须基于事实，不得编造信息")
     gateway_summary_parts.append("")
     
-    # 门控机制触发情况（Task 6）
+    # 门控机制触发情况
     gateway_summary_parts.append("【门控机制触发情况】")
-    # 补偿型门控
     if cam_ctx.get("camera_view") == "dashcam_ego_view":
         gateway_summary_parts.append("补偿型门控：已触发（原因：行车记录仪视角，自车作为隐式参与方计入涉事车辆总数）")
     else:
         gateway_summary_parts.append("补偿型门控：未触发（原因：非行车记录仪视角）")
-    # 冲突型门控
     if fusion_result.get("conflict_detected"):
         gateway_summary_parts.append(f"冲突型门控：已触发（原因：{qwen_check.get('conflict_reasons', ['检测到类型冲突'])[0]}）")
     else:
         gateway_summary_parts.append("冲突型门控：未触发（原因：检测模型与千问语义校验结果一致）")
-    # 证据不足门控
     critical_missing = fusion_result.get("keyframe_video_consistency", {}).get("missing_items", [])
-    key_evidence_types = {"碰撞部位", "双方车辆关系", "事故后位置", "collision_point", "vehicle_relationship", "post_crash_position"}
+    key_evidence_types = {"碰撞部位", "双方车辆关系", "事故后位置"}
     has_critical_missing = any(any(kw in item for kw in key_evidence_types) for item in critical_missing)
     if has_critical_missing:
-        gateway_summary_parts.append(f"证据不足门控：已触发（原因：存在关键证据缺失）")
+        gateway_summary_parts.append("证据不足门控：已触发（原因：存在关键证据缺失）")
     else:
         gateway_summary_parts.append("证据不足门控：未触发（原因：关键证据完整）")
     gateway_summary_parts.append("")
     
     gateway_summary_text = "\n".join(gateway_summary_parts)
     
-    # 构建融合摘要（简短的决策信息）
-    summary_parts = []
-    summary_parts.append(f"视角: {cam_ctx.get('camera_view', 'unknown')}")
-    summary_parts.append(f"自车参与: {cam_ctx.get('ego_vehicle_present', False)}")
-    summary_parts.append(f"外部可见车辆数: {cam_ctx.get('visible_external_vehicle_count', 0)}")
-    summary_parts.append(f"估计涉事车辆数: {cam_ctx.get('estimated_involved_vehicle_count', 0)}")
-
-    if fusion_result:
-        summary_parts.append(f"接受的事故类型: {fusion_result.get('accepted_accident_type', 'unknown')}")
-        summary_parts.append(f"类型决策状态: {fusion_result.get('type_decision_status', 'unknown')}")
-        summary_parts.append(f"最终状态: {fusion_result.get('final_status', 'unknown')}")
-        summary_parts.append(f"状态说明: {fusion_result.get('status_reason', '')}")
-        if fusion_result.get("conflict_detected"):
-            summary_parts.append("冲突检测: 是")
-            for reason in qwen_check.get("conflict_reasons", []):
-                summary_parts.append(f"  冲突: {reason}")
-        summary_parts.append(f"人工复核: {'需要' if fusion_result.get('manual_review_required') else '不需要'}")
-        summary_parts.append(f"系统操作: {fusion_result.get('system_action', 'unknown')}")
-    
-    summary_text = "\n".join(summary_parts)
-    
-    # Task 1: 门控摘要在最前面
-    summary_text = gateway_summary_text + summary_text
+    # ========== 6. 填充模板变量 ==========
+    summary_text = template.format(
+        gateway_summary=gateway_summary_text,
+        final_status=final_status,
+        rule_status=fusion_result.get("type_decision_status", "unknown"),
+        ml_label="unknown",  # ML模型暂未生效
+        ml_confidence=0.0,
+        conflict_detected=fusion_result.get("conflict_detected", False),
+        evidence_sufficient=not fusion_result.get("manual_review_required", True),
+        yolo_output=json.dumps(yolo_raw, ensure_ascii=False, indent=2),
+        qwen_output=qwen_raw_text or "（千问未返回有效分析结果）"
+    )
 
     # ========== 5. 追加两部分原始输出 ==========
     summary_text += "\n\n" + "=" * 60 + "\n"
@@ -2196,6 +2143,118 @@ async def api_evidence_consistency(case_id: str):
         return {"success": True, "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"一致性检测失败: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# 复核辅助 API（Task 6）
+# ---------------------------------------------------------------------------
+@app.get("/api/cases/{case_id}/review-assist")
+async def api_get_review_assist(case_id: str):
+    """获取复核辅助结果"""
+    try:
+        from backend.services.review_assist_service import get_review_assist_from_fused_evidence
+        
+        # 尝试从融合证据包获取
+        fused = _get_fused_evidence(case_id)
+        result = get_review_assist_from_fused_evidence(case_id, fused)
+        
+        if not result:
+            # 如果融合证据包中没有，从数据库获取案件信息
+            case = get_case(case_id)
+            if not case:
+                raise HTTPException(status_code=404, detail="案件不存在")
+            
+            # 构建基础 case_data
+            from backend.services.review_focus_service import generate_review_assist
+            case_data = {
+                "system_route": "manual_review_required",
+                "type_conflict_detected": False,
+                "evidence_completeness_score": 7,
+                "Case Perspective": "unknown",
+                "ego_vehicle_present": False,
+                "yolo_confidence": 0.0,
+                "qwen_confidence": 0.0,
+                "yolo_candidate_type": "unknown",
+                "qwen_candidate_type": "unknown",
+                "route_reason": ""
+            }
+            result = generate_review_assist(case_id, case_data)
+        
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"获取复核辅助结果失败: {str(e)}")
+
+@app.post("/api/cases/{case_id}/review-assist/generate")
+async def api_generate_review_assist(case_id: str):
+    """生成/刷新复核辅助结果"""
+    try:
+        from backend.services.review_assist_service import get_review_assist_from_fused_evidence
+        
+        # 从融合证据包生成
+        fused = _get_fused_evidence(case_id)
+        result = get_review_assist_from_fused_evidence(case_id, fused)
+        
+        if not result:
+            raise HTTPException(status_code=400, detail="无法生成复核辅助结果，请先完成视频分析和证据融合")
+        
+        return {"success": True, "data": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"生成复核辅助结果失败: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# 门控决策 API（Task 1: 统一门控控制器）
+# ---------------------------------------------------------------------------
+class EvidenceGateRequest(BaseModel):
+    view_type: int = 0
+    visible_vehicle_count: int = 0
+    type_conflict: bool = False
+    evidence_score: int = 0
+    missing_evidence: List[str] = []
+    keyframe_quality: float = 0.0
+    yolo_conf: float = 0.0
+    qwen_conf: float = 0.0
+    type_consistency: float = 0.0
+    conflict_score: float = 0.0
+
+@app.post("/api/evidence/gate")
+async def api_evidence_gate(data: EvidenceGateRequest):
+    """获取门控决策（融合规则门控和 ML 模型）"""
+    try:
+        # 导入门控控制器
+        from backend.evidence_gate_controller import get_gate_controller
+        controller = get_gate_controller()
+        
+        # 构建案件数据
+        case_data = {
+            "view_type": data.view_type,
+            "visible_vehicle_count": data.visible_vehicle_count,
+            "type_conflict": data.type_conflict,
+            "evidence_score": data.evidence_score,
+            "missing_evidence": data.missing_evidence,
+            "keyframe_quality": data.keyframe_quality,
+            "yolo_conf": data.yolo_conf,
+            "qwen_conf": data.qwen_conf,
+            "type_consistency": data.type_consistency,
+            "conflict_score": data.conflict_score
+        }
+        
+        # 获取门控决策
+        result = controller.get_gate_decision(case_data)
+        
+        return {"success": True, "data": result}
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"门控控制器加载失败: {str(e)}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"门控决策失败: {str(e)}")
 
 # ---------------------------------------------------------------------------
 # 报告导出 API（精简）
