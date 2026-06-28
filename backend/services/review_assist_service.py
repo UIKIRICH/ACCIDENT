@@ -1,7 +1,10 @@
 """
 复核辅助服务：整合所有复核辅助功能
+内部管理 Excel 数据缓存，提供数据加载和查询接口
 """
-from typing import Dict, Any, Optional
+import os
+import pandas as pd
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from backend.models.review_assist import ReviewAssistResult
@@ -15,105 +18,206 @@ from backend.services.review_focus_service import (
     map_route_type_to_cn
 )
 
+# ---------- 全局数据缓存 ----------
+_excel_case_data: Dict[str, Dict[str, Any]] = {}
+_review_cache: Dict[str, ReviewAssistResult] = {}
+_loaded: bool = False
 
-def generate_review_assist(case_id: str, case_data: dict) -> Dict[str, Any]:
-    """
-    生成复核辅助结果
+def _standardize_case_fields(case_dict: dict) -> Dict[str, Any]:
+    """标准化字段类型"""
+    result = {}
+    for key, value in case_dict.items():
+        key = key.strip()
+        if key in ["review_time_seconds", "evidence_completeness_score", 
+                   "evidence_conflict_score", "yolo_confidence", 
+                   "qwen_confidence", "estimated_involved_vehicle_count"]:
+            try:
+                value = float(value) if "." in str(value) else int(value)
+            except (ValueError, TypeError):
+                value = 0
+        result[key] = value
+    return result
+
+def load_excel_data(file_path: str = "事故案例汇总表.xlsx") -> bool:
+    """加载 Excel 数据到内存缓存，以 case_id 为键"""
+    global _excel_case_data, _loaded
+    try:
+        # 处理相对路径
+        if not os.path.isabs(file_path):
+            if not os.path.exists(file_path):
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                alt_path = os.path.join(base_dir, file_path)
+                if os.path.exists(alt_path):
+                    file_path = alt_path
+                else:
+                    cwd_path = os.path.join(os.getcwd(), file_path)
+                    if os.path.exists(cwd_path):
+                        file_path = cwd_path
+        df = pd.read_excel(file_path, engine="openpyxl")
+        df.columns = df.columns.str.strip()
+        case_dict = {}
+        for _, row in df.iterrows():
+            case_id = str(row.get("case_id", "")).strip()
+            # 跳过表头行（"案例编号"）以及空 ID
+            if case_id and case_id != "案例编号":
+                case_dict[case_id] = _standardize_case_fields(row.to_dict())
+        # 直接重新赋值，避免 clear() 清空后因 update 空字典导致丢失
+        _excel_case_data = case_dict
+        _loaded = True
+        print(f"[INFO] 成功加载 {len(_excel_case_data)} 个案例数据")
+        return True
+    except FileNotFoundError:
+        print(f"[ERROR] 找不到文件: {file_path}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] 加载失败: {e}")
+        return False
+
+def ensure_loaded(file_path: str = "事故案例汇总表.xlsx") -> bool:
+    """确保数据已加载"""
+    global _loaded
+    if not _loaded:
+        return load_excel_data(file_path)
+    return True
+
+def get_case_data(case_id: str) -> Optional[Dict[str, Any]]:
+    """根据 case_id 从缓存中获取案例数据"""
+    ensure_loaded()
+    case_id = case_id.strip()
     
-    Args:
-        case_id: 案件ID
-        case_data: 案件数据字典
+    # 1. 直接精确匹配
+    if case_id in _excel_case_data:
+        return _excel_case_data[case_id]
     
-    Returns:
-        复核辅助结果字典
-    """
-    # 1. 识别复核重点
+    # 2. 忽略大小写匹配（并将键转为大写比较）
+    case_id_upper = case_id.upper()
+    for key, value in _excel_case_data.items():
+        # 跳过无效键（如'案例编号'）
+        if key.startswith("CASE-") and key.strip().upper() == case_id_upper:
+            return value
+    
+    # 3. 如果还是找不到，打印调试信息
+    print(f"[DEBUG] 未找到案例 {case_id}，现有键示例: {list(_excel_case_data.keys())[:10]}")
+    return None
+
+def get_all_case_ids() -> List[str]:
+    """获取所有案例ID"""
+    ensure_loaded()
+    return list(_excel_case_data.keys())
+
+def generate_review_assist(case_id: str) -> ReviewAssistResult:
+    """生成复核辅助结果"""
+    case_data = get_case_data(case_id)
+    if not case_data:
+        raise ValueError(f"案例 {case_id} 不存在")
+
     review_focus = identify_review_focus(case_data)
-    
-    # 2. 计算优先级评分
     priority_result = calculate_priority_score(case_data)
-    review_priority_score = priority_result["score"]
-    review_priority_level = priority_result["level"]
-    
-    # 3. 生成补证提示
     evidence_required_items = generate_evidence_required_items(case_data)
-    
-    # 4. 生成冲突摘要
     conflict_summary = generate_conflict_summary(case_data)
-    
-    # 5. 判断证据状态
     evidence_status = determine_evidence_status(case_data)
+    risk_notes = generate_risk_notes(case_data, review_focus, priority_result["level"])
+    route_type = case_data.get("system_route", "manual_review_required")
+    route_type_cn = map_route_type_to_cn(route_type)
+    now = datetime.now()
+    result = ReviewAssistResult(
+        case_id=case_id,
+        route_type=route_type,
+        route_type_cn=route_type_cn,
+        review_priority_score=priority_result["score"],
+        review_priority_level=priority_result["level"],
+        review_priority_reason=priority_result["reason"],
+        review_focus=review_focus,
+        conflict_summary=conflict_summary,
+        evidence_status=evidence_status,
+        evidence_required_items=evidence_required_items,
+        risk_notes=risk_notes,
+        created_at=now,
+        updated_at=now
+    )
+    _review_cache[case_id] = result
+    return result
+
+def generate_review_assist_from_data(case_id: str, case_data: dict) -> ReviewAssistResult:
+    """从传入的 case_data 直接生成复核辅助结果（不依赖全局缓存）"""
+    if not case_data:
+        raise ValueError(f"案例 {case_id} 数据为空")
+
+    review_focus = identify_review_focus(case_data)
+    priority_result = calculate_priority_score(case_data)
+    evidence_required_items = generate_evidence_required_items(case_data)
+    conflict_summary = generate_conflict_summary(case_data)
+    evidence_status = determine_evidence_status(case_data)
+    risk_notes = generate_risk_notes(case_data, review_focus, priority_result["level"])
     
-    # 6. 生成风险提示
-    risk_notes = generate_risk_notes(case_data, review_focus, review_priority_level)
-    
-    # 7. 确定路由类型
     route_type = case_data.get("system_route", "manual_review_required")
     route_type_cn = map_route_type_to_cn(route_type)
     
-    # 8. 构建结果
     now = datetime.now()
-    result = {
-        "case_id": case_id,
-        "route_type": route_type,
-        "route_type_cn": route_type_cn,
-        "review_focus": review_focus,
-        "review_priority_score": review_priority_score,
-        "review_priority_level": review_priority_level,
-        "conflict_summary": conflict_summary,
-        "evidence_status": evidence_status,
-        "evidence_required_items": evidence_required_items,
-        "risk_notes": risk_notes,
-        "created_at": now,
-        "updated_at": now
-    }
-    
+    result = ReviewAssistResult(
+        case_id=case_id,
+        route_type=route_type,
+        route_type_cn=route_type_cn,
+        review_priority_score=priority_result["score"],
+        review_priority_level=priority_result["level"],
+        review_priority_reason=priority_result["reason"],
+        review_focus=review_focus,
+        conflict_summary=conflict_summary,
+        evidence_status=evidence_status,
+        evidence_required_items=evidence_required_items,
+        risk_notes=risk_notes,
+        created_at=now,
+        updated_at=now
+    )
     return result
 
-
-def get_review_assist_from_fused_evidence(case_id: str, fused_packet: dict) -> Optional[Dict[str, Any]]:
-    """
-    从融合证据包中提取或生成复核辅助结果
-    
-    Args:
-        case_id: 案件ID
-        fused_packet: 融合证据包
-    
-    Returns:
-        复核辅助结果字典，如果无法生成则返回 None
-    """
-    if not fused_packet:
-        return None
-    
+def get_review_assist(case_id: str) -> Optional[ReviewAssistResult]:
+    """查询复核辅助结果"""
+    if case_id in _review_cache:
+        return _review_cache[case_id]
     try:
-        # 从融合证据包中提取关键字段
-        camera_context = fused_packet.get("camera_context", {})
-        fusion_result = fused_packet.get("fusion_result", {})
-        qwen_check = fused_packet.get("qwen_semantic_check", {})
-        
-        # 构建 case_data
-        case_data = {
-            "system_route": "manual_review_required" if fusion_result.get("manual_review_required") else "proceed_to_liability",
-            "type_conflict_detected": fusion_result.get("conflict_detected", False),
-            "evidence_completeness_score": 8 if not fusion_result.get("manual_review_required") else 4,
-            "Case Perspective": camera_context.get("camera_view", "unknown"),
-            "ego_vehicle_present": camera_context.get("ego_vehicle_present", False),
-            "yolo_confidence": fusion_result.get("detector_output", {}).get("detector_type_confidence", 0.0),
-            "qwen_confidence": qwen_check.get("semantic_confidence", 0.0),
-            "yolo_candidate_type": fusion_result.get("detector_output", {}).get("candidate_accident_type_from_detector", "unknown"),
-            "qwen_candidate_type": qwen_check.get("semantic_accident_type_from_qwen", "unknown"),
-            "route_reason": fusion_result.get("status_reason", ""),
-            "video_available": True,
-            "keyframe_count": 5,  # 假设有关键帧
-            "image_available": True,
-            "structured_fact_available": True,
-            "has_other_view": False,
-            "evidence": {}
-        }
-        
-        # 生成复核辅助结果
-        return generate_review_assist(case_id, case_data)
-    
-    except Exception as e:
-        print(f"[WARN] 从融合证据包生成复核辅助结果失败: {e}")
+        return generate_review_assist(case_id)
+    except ValueError:
         return None
+
+def batch_generate(case_ids: List[str]) -> List[ReviewAssistResult]:
+    results = []
+    for cid in case_ids:
+        try:
+            results.append(generate_review_assist(cid))
+        except Exception as e:
+            print(f"[WARN] 生成 {cid} 失败: {e}")
+    return results
+
+def get_statistics() -> Dict[str, Any]:
+    ensure_loaded()
+    if not _review_cache:
+        for cid in get_all_case_ids():
+            if cid:
+                try:
+                    generate_review_assist(cid)
+                except:
+                    pass
+    results = list(_review_cache.values())
+    total = len(results)
+    route_stats = {}
+    priority_stats = {}
+    focus_stats = {}
+    evidence_stats = {}
+    report_verify_count = 0
+    for r in results:
+        route_stats[r.route_type_cn] = route_stats.get(r.route_type_cn, 0) + 1
+        priority_stats[r.review_priority_level] = priority_stats.get(r.review_priority_level, 0) + 1
+        evidence_stats[r.evidence_status] = evidence_stats.get(r.evidence_status, 0) + 1
+        for f in r.review_focus:
+            focus_stats[f] = focus_stats.get(f, 0) + 1
+        if "报告生成验证" in r.review_focus:
+            report_verify_count += 1
+    return {
+        "total": total,
+        "route_type_stats": route_stats,
+        "priority_stats": priority_stats,
+        "focus_stats": focus_stats,
+        "evidence_status_stats": evidence_stats,
+        "report_verify_count": report_verify_count
+    }

@@ -1,61 +1,80 @@
 """
 复核辅助服务：实现复核重点识别、优先级评分、补证提示等功能
+严格按照任务要求实现
 """
 from typing import List, Dict, Any
 
 
 def identify_review_focus(case_data: dict) -> List[str]:
     """
-    识别复核重点
+    识别复核重点（可多选）
     
     Args:
-        case_data: 案件数据字典，包含以下字段：
-            - type_conflict_detected: bool/str
-            - evidence_completeness_score: int (0-10)
-            - Case Perspective: str
-            - ego_vehicle_present: bool
-            - yolo_confidence: float
-            - qwen_confidence: float
-            - yolo_candidate_type: str
-            - qwen_candidate_type: str
+        case_data: 案件数据字典
     
     Returns:
         复核重点列表
     """
     review_focus = []
     
-    # 1. 类型冲突检测
-    type_conflict = case_data.get("type_conflict_detected")
-    if type_conflict == "是" or type_conflict is True:
-        review_focus.append("类型冲突")
+    # 1. 模型结论冲突
+    type_conflict = _get_str(case_data.get("type_conflict_detected"))
+    if type_conflict == "是":
+        review_focus.append("模型结论冲突")
     
-    # 2. 证据不足检测
-    evidence_score = case_data.get("evidence_completeness_score", 10)
+    # 2. 视角不完整：行车记录仪视角
+    perspective = _get_str(case_data.get("Case Perspective"))
+    if "行车记录仪" in perspective:
+        review_focus.append("视角不完整")
+    
+    # 3. 责任敏感：事故类型属于追尾、变道碰撞、转弯未让行、侧向碰撞、多车事故
+    sensitive_types = ["追尾", "变道碰撞", "转弯未让行", "侧向碰撞", "多车事故"]
+    yolo_type = _get_str(case_data.get("yolo_candidate_type"))
+    qwen_type = _get_str(case_data.get("qwen_candidate_type"))
+    system_route = _get_str(case_data.get("system_route"))
+    route_reason = _get_str(case_data.get("route_reason"))
+    
+    # 检查是否属于责任敏感类型
+    accident_type_text = f"{yolo_type} {qwen_type} {system_route} {route_reason}"
+    for sensitive_type in sensitive_types:
+        if sensitive_type in accident_type_text:
+            review_focus.append("责任敏感")
+            break
+    
+    # 多车事故判断
+    vehicle_count = case_data.get("estimated_involved_vehicle_count", 0)
+    if isinstance(vehicle_count, (int, float)) and vehicle_count > 2:
+        if "责任敏感" not in review_focus:
+            review_focus.append("责任敏感")
+    
+    # 4. 证据不足
+    evidence_score = case_data.get("evidence_completeness_score")
     if isinstance(evidence_score, (int, float)) and evidence_score < 6:
         review_focus.append("证据不足")
     
-    # 3. 视角不完整检测（行车记录仪且自车参与）
-    perspective = str(case_data.get("Case Perspective", ""))
-    ego_present = case_data.get("ego_vehicle_present", False)
-    if "行车记录仪" in perspective and ego_present is True:
-        review_focus.append("视角不完整")
-    
-    # 4. 低置信度检测
-    yolo_conf = case_data.get("yolo_confidence", 1.0)
-    qwen_conf = case_data.get("qwen_confidence", 1.0)
-    if (isinstance(yolo_conf, (int, float)) and yolo_conf < 0.5) or \
-       (isinstance(qwen_conf, (int, float)) and qwen_conf < 0.5):
+    # 5. 低置信度
+    yolo_conf = case_data.get("yolo_confidence")
+    qwen_conf = case_data.get("qwen_confidence")
+    low_conf = False
+    if isinstance(yolo_conf, (int, float)) and yolo_conf < 0.5:
+        low_conf = True
+    if isinstance(qwen_conf, (int, float)) and qwen_conf < 0.5:
+        low_conf = True
+    if low_conf:
         review_focus.append("低置信度")
     
-    # 5. 责任敏感类型检测
-    sensitive_types = ["rear_end", "turn_conflict", "lane_change_collision", "side_collision"]
-    yolo_type = str(case_data.get("yolo_candidate_type", "")).lower()
-    qwen_type = str(case_data.get("qwen_candidate_type", "")).lower()
-    accident_type = yolo_type or qwen_type
-    if accident_type in sensitive_types:
-        review_focus.append("责任敏感")
+    # 6. 规则依据需核对
+    human_decision = _get_str(case_data.get("human_review_decision"))
+    system_suggestion = _get_str(case_data.get("system_liability_suggestion"))
+    if human_decision != system_suggestion or type_conflict == "是":
+        review_focus.append("规则依据需核对")
     
-    # 6. 默认情况：证据充分则快速确认
+    # 7. 报告生成验证
+    report_generated = _get_str(case_data.get("report_generated"))
+    if report_generated == "否":
+        review_focus.append("报告生成验证")
+    
+    # 8. 快速确认（仅当以上条件均不满足时）
     if not review_focus:
         review_focus.append("快速确认")
     
@@ -65,63 +84,136 @@ def identify_review_focus(case_data: dict) -> List[str]:
 def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
     """
     计算复核优先级评分（0-100分）
-    
-    Args:
-        case_data: 案件数据字典
-    
-    Returns:
-        包含 score 和 level 的字典
+    优化版本：降低基础分，调整权重，增加快速确认特殊处理
     """
-    score = 30  # 基础分
-    
-    # 类型冲突：+25分
-    type_conflict = case_data.get("type_conflict_detected")
-    if type_conflict == "是" or type_conflict is True:
-        score += 25
-    
-    # 证据不足：+20分
-    evidence_score = case_data.get("evidence_completeness_score", 10)
-    if isinstance(evidence_score, (int, float)) and evidence_score < 6:
+    # 提取字段
+    type_conflict = _get_str(case_data.get("type_conflict_detected"))
+    perspective = _get_str(case_data.get("Case Perspective"))
+    human_decision = _get_str(case_data.get("human_review_decision"))
+    system_suggestion = _get_str(case_data.get("system_liability_suggestion"))
+    report_generated = _get_str(case_data.get("report_generated"))
+    route_reason = _get_str(case_data.get("route_reason"))
+    evidence_score = case_data.get("evidence_completeness_score")
+    yolo_conf = case_data.get("yolo_confidence")
+    qwen_conf = case_data.get("qwen_confidence")
+    vehicle_count = case_data.get("estimated_involved_vehicle_count", 0)
+    system_route = _get_str(case_data.get("system_route"))
+
+    score = 30  # 基础分从50降到30
+    reasons = []
+
+    # ====== 快速确认特殊处理 ======
+    # 如果无冲突、证据完整（≥8）、系统路由为 proceed_to_liability，直接给低分
+    if (type_conflict == "否" and 
+        isinstance(evidence_score, (int, float)) and evidence_score >= 8 and
+        system_route == "proceed_to_liability"):
+        score = 20
+        reasons.append("快速确认案例，基础分20")
+        if "行车记录仪" in perspective:
+            score += 5
+            reasons.append("行车记录仪视角(+5)")
+        if human_decision and system_suggestion and human_decision == system_suggestion:
+            score -= 5
+            reasons.append("人工结论与系统建议一致(-5)")
+        if isinstance(vehicle_count, (int, float)) and vehicle_count > 3:
+            score += 5
+            reasons.append("多车事故(+5)")
+        return {"score": max(0, min(score, 100)), "level": "低" if score < 40 else "中", "reason": "；".join(reasons)}
+
+    # ====== 加分项 ======
+    # 1. 模型结论冲突：+20
+    if type_conflict == "是":
         score += 20
-    
-    # 行车记录仪视角且自车参与：+15分
-    perspective = str(case_data.get("Case Perspective", ""))
-    ego_present = case_data.get("ego_vehicle_present", False)
-    if "行车记录仪" in perspective and ego_present is True:
+        reasons.append("模型结论冲突(+20)")
+
+    # 2. 行车记录仪视角：+5（从10降为5）
+    if "行车记录仪" in perspective:
+        score += 5
+        reasons.append("行车记录仪视角(+5)")
+
+    # 3. 证据不足：+15
+    if isinstance(evidence_score, (int, float)) and evidence_score < 6:
         score += 15
-    
-    # 低置信度：+15分
-    yolo_conf = case_data.get("yolo_confidence", 1.0)
-    qwen_conf = case_data.get("qwen_confidence", 1.0)
-    if (isinstance(yolo_conf, (int, float)) and yolo_conf < 0.5) or \
-       (isinstance(qwen_conf, (int, float)) and qwen_conf < 0.5):
+        reasons.append("证据不足(+15)")
+
+    # 4. 责任敏感事故类型：+5（从10降为5）
+    sensitive_types = ["追尾", "变道碰撞", "转弯未让行", "侧向碰撞", "多车事故"]
+    yolo_type = _get_str(case_data.get("yolo_candidate_type"))
+    qwen_type = _get_str(case_data.get("qwen_candidate_type"))
+    accident_type_text = f"{yolo_type} {qwen_type} {system_route} {route_reason}"
+    is_sensitive = False
+    for sensitive_type in sensitive_types:
+        if sensitive_type in accident_type_text:
+            is_sensitive = True
+            break
+    if is_sensitive:
+        score += 5
+        reasons.append("责任敏感(+5)")
+
+    # 5. 多车事故：+5（从10降为5，阈值提高到>3）
+    if isinstance(vehicle_count, (int, float)) and vehicle_count > 3:
+        score += 5
+        reasons.append("多车事故(+5)")
+
+    # 6. 低置信度：只看 yolo_conf，且阈值提高到<0.4（不再看 qwen）
+    if isinstance(yolo_conf, (int, float)) and yolo_conf < 0.4:
+        score += 5
+        reasons.append("低置信度(+5)")
+
+    # 7. 规则依据需核对：仅在 type_conflict 时加 +5（不再因人工不同而加）
+    if type_conflict == "是":
+        score += 5
+        reasons.append("规则依据需核对(+5)")
+
+    # 8. 复杂路况：+15
+    if "复杂" in route_reason or "多车" in route_reason:
         score += 15
-    
-    # 责任敏感类型：+10分
-    sensitive_types = ["rear_end", "turn_conflict", "lane_change_collision", "side_collision"]
-    yolo_type = str(case_data.get("yolo_candidate_type", "")).lower()
-    qwen_type = str(case_data.get("qwen_candidate_type", "")).lower()
-    accident_type = yolo_type or qwen_type
-    if accident_type in sensitive_types:
+        reasons.append("复杂路况(+15)")
+
+    # 9. 报告生成失败：+10
+    if report_generated == "否":
         score += 10
-    
-    # 分数截断
-    score = min(score, 100)
-    
-    # 分级
-    if score >= 70:
+        reasons.append("报告生成失败(+10)")
+
+    # ====== 减分项 ======
+    # 1. YOLO与千问一致：-20（从-10变为-20）
+    if type_conflict == "否":
+        score -= 20
+        reasons.append("YOLO与千问一致(-20)")
+
+    # 2. 监控视角：-5
+    if "交通监控" in perspective:
+        score -= 5
+        reasons.append("监控视角(-5)")
+
+    # 3. 报告生成成功：-15（从-5变为-15）
+    if report_generated == "是":
+        score -= 15
+        reasons.append("报告生成成功(-15)")
+
+    # 4. 人工复核未修改系统建议：-15（从-5变为-15）
+    if human_decision and system_suggestion and human_decision == system_suggestion:
+        score -= 15
+        reasons.append("人工未修改系统建议(-15)")
+
+    # 限制范围
+    score = max(0, min(100, score))
+
+    # 等级划分（调整阈值）
+    if score >= 75:
         level = "高"
-    elif score >= 40:
+    elif score >= 45:
         level = "中"
     else:
         level = "低"
-    
-    return {"score": score, "level": level}
+
+    reason_text = "；".join(reasons) if reasons else "基础分30"
+    return {"score": score, "level": level, "reason": reason_text}
 
 
 def generate_evidence_required_items(case_data: dict) -> List[str]:
     """
-    生成补证提示列表
+    生成补证或核对建议列表
     
     Args:
         case_data: 案件数据字典
@@ -131,48 +223,49 @@ def generate_evidence_required_items(case_data: dict) -> List[str]:
     """
     items = []
     
-    # 视频缺失
-    video_available = case_data.get("video_available", True)
-    if video_available == "否" or video_available is False:
+    # 若 video_available == "否" → “需要补充事故视频”
+    video_available = _get_str(case_data.get("video_available"))
+    if video_available == "否":
         items.append("需要补充事故视频")
     
-    # 关键帧缺失
-    keyframe_count = case_data.get("keyframe_count", 0)
-    if isinstance(keyframe_count, (int, float)) and keyframe_count == 0:
+    # 若 route_reason 含“关键帧”或“关键证据缺失” → “需要补充关键碰撞帧”
+    route_reason = _get_str(case_data.get("route_reason"))
+    if "关键帧" in route_reason or "关键证据缺失" in route_reason:
         items.append("需要补充关键碰撞帧")
     
-    # 图片缺失
-    image_available = case_data.get("image_available", True)
-    if image_available == "否" or image_available is False:
+    # 若 image_available == "否" → “需要补充现场图片或车损图片”
+    image_available = _get_str(case_data.get("image_available"))
+    if image_available == "否":
         items.append("需要补充现场图片或车损图片")
     
-    # 结构化事实缺失
-    structured_fact_available = case_data.get("structured_fact_available", True)
-    if structured_fact_available == "否" or structured_fact_available is False:
+    # 若 structured_fact_available == "否" → “需要补充事故描述文本”
+    structured_fact_available = _get_str(case_data.get("structured_fact_available"))
+    if structured_fact_available == "否":
         items.append("需要补充事故描述文本")
     
-    # 视角不完整（行车记录仪且无其他视角）
-    perspective = str(case_data.get("Case Perspective", ""))
-    has_other_view = case_data.get("has_other_view", False)
-    if "行车记录仪" in perspective and not has_other_view:
+    # 若行车记录仪视角 → “建议补充另一视角视频或现场照片”
+    perspective = _get_str(case_data.get("Case Perspective"))
+    if "行车记录仪" in perspective:
         items.append("建议补充另一视角视频或现场照片")
     
-    # 碰撞部位不清
-    route_reason = str(case_data.get("route_reason", ""))
-    evidence = case_data.get("evidence", {})
-    if isinstance(evidence, dict):
-        collision_point_clear = evidence.get("collision_point_clear", True)
-        if collision_point_clear is False or "碰撞部位" in route_reason:
-            items.append("建议补充车损部位图片")
+    # 若 route_reason 含“碰撞部位”或“接触点” → “建议补充车损部位图片”
+    if "碰撞部位" in route_reason or "接触点" in route_reason:
+        items.append("建议补充车损部位图片")
     
-    # 默认情况
+    # 若 type_conflict_detected == "是" → 额外建议
+    type_conflict = _get_str(case_data.get("type_conflict_detected"))
+    if type_conflict == "是":
+        items.append("建议核对关键帧和车辆行为")
+        items.append("建议核对规则依据和结构化事实")
+    
+    # 若以上无任何项，则默认
     if not items:
-        items.append("当前证据基本完整，可进入责任推理")
+        items.append("当前证据基本完整，建议核对规则依据和责任建议")
     
     return items
 
 
-def generate_conflict_summary(case_data: dict) -> Optional[str]:
+def generate_conflict_summary(case_data: dict) -> str:
     """
     生成冲突摘要
     
@@ -180,21 +273,24 @@ def generate_conflict_summary(case_data: dict) -> Optional[str]:
         case_data: 案件数据字典
     
     Returns:
-        冲突摘要文本，如果无冲突则返回 None
+        冲突摘要文本
     """
-    type_conflict = case_data.get("type_conflict_detected")
-    if type_conflict != "是" and type_conflict is not True:
-        return None
+    type_conflict = _get_str(case_data.get("type_conflict_detected"))
+    yolo_type = _get_str(case_data.get("yolo_candidate_type"))
+    qwen_type = _get_str(case_data.get("qwen_candidate_type"))
+    human_decision = _get_str(case_data.get("human_review_decision"))
+    system_suggestion = _get_str(case_data.get("system_liability_suggestion"))
     
-    # 从 route_reason 中提取冲突信息
-    route_reason = str(case_data.get("route_reason", ""))
-    if route_reason:
-        return f"检测模型与语义校验存在类型冲突：{route_reason}"
+    # 若类型冲突
+    if type_conflict == "是":
+        return f"YOLO 初步判定为 {yolo_type or 'unknown'}，千问/GPT 判断为 {qwen_type or 'unknown'}，两者在事故类型上存在差异，建议人工核对关键帧和车辆行为。"
     
-    # 默认冲突描述
-    yolo_type = case_data.get("yolo_candidate_type", "unknown")
-    qwen_type = case_data.get("qwen_candidate_type", "unknown")
-    return f"检测模型识别为 '{yolo_type}'，千问语义校验识别为 '{qwen_type}'，两者不一致"
+    # 若无冲突但人工结论与系统建议不同
+    if human_decision and system_suggestion and human_decision != system_suggestion:
+        return "YOLO 与千问/GPT 判断基本一致，但人工复核结论与系统责任建议存在差异，建议核对规则依据。"
+    
+    # 若无冲突且一致
+    return "YOLO 与千问/GPT 判断基本一致，建议人工核对规则依据和责任建议。"
 
 
 def determine_evidence_status(case_data: dict) -> str:
@@ -205,55 +301,83 @@ def determine_evidence_status(case_data: dict) -> str:
         case_data: 案件数据字典
     
     Returns:
-        证据状态：充分 / 有冲突 / 不足
+        证据状态：证据充分 / 证据有冲突 / 证据不足 / 证据需核对
     """
-    # 有冲突
-    type_conflict = case_data.get("type_conflict_detected")
-    if type_conflict == "是" or type_conflict is True:
-        return "有冲突"
+    type_conflict = _get_str(case_data.get("type_conflict_detected"))
+    evidence_score = case_data.get("evidence_completeness_score")
     
-    # 证据不足
-    evidence_score = case_data.get("evidence_completeness_score", 10)
+    # 若 type_conflict_detected == "是" → 证据有冲突
+    if type_conflict == "是":
+        return "证据有冲突"
+    
+    # 若 evidence_completeness_score < 6 → 证据不足
     if isinstance(evidence_score, (int, float)) and evidence_score < 6:
-        return "不足"
+        return "证据不足"
     
-    # 默认：充分
-    return "充分"
+    # 若 type_conflict_detected == "否" 且 evidence_completeness_score >= 6 → 证据充分
+    if type_conflict == "否" and isinstance(evidence_score, (int, float)) and evidence_score >= 6:
+        return "证据充分"
+    
+    # 否则 → 证据需核对（兜底）
+    return "证据需核对"
 
 
 def generate_risk_notes(case_data: dict, review_focus: List[str], priority_level: str) -> str:
     """
-    生成风险提示
+    根据复核重点组合生成风险提示
     
     Args:
         case_data: 案件数据字典
         review_focus: 复核重点列表
-        priority_level: 优先级等级（高/中/低）
+        priority_level: 优先级等级
     
     Returns:
         风险提示文本
     """
-    # 高优先级
-    if priority_level == "高":
-        if "类型冲突" in review_focus:
-            return "该案例存在类型冲突，不适合直接快速确认，应进入人工重点复核。"
-        elif "证据不足" in review_focus:
-            return "该案例证据严重不足，无法进行有效责任认定，需补充关键证据后再审。"
-        else:
-            return "该案例复杂度较高，建议人工重点复核。"
+    has_model_conflict = "模型结论冲突" in review_focus
+    has_incomplete_view = "视角不完整" in review_focus
+    has_liability_sensitive = "责任敏感" in review_focus
+    has_insufficient_evidence = "证据不足" in review_focus
+    has_quick_confirm = "快速确认" in review_focus
     
-    # 中优先级
-    elif priority_level == "中":
-        if "视角不完整" in review_focus:
-            return "该案例视角受限，可能存在盲区，建议复核时注意画面外信息。"
-        elif "低置信度" in review_focus:
-            return "该案例检测置信度较低，建议复核时结合其他证据综合判断。"
-        else:
-            return "该案例存在一定不确定性，建议人工复核确认。"
+    # 优先采用模板
+    if has_model_conflict and has_liability_sensitive:
+        return "该案例存在模型结论冲突和责任敏感因素，建议人工重点复核。"
     
-    # 低优先级
-    else:
-        return "证据充分，可快速确认。"
+    if has_model_conflict:
+        return "该案例存在模型结论冲突，建议人工重点复核。"
+    
+    if has_incomplete_view:
+        return "该案例视角不完整，建议人工核对车辆关系。"
+    
+    if has_insufficient_evidence:
+        return "该案例证据不足，建议补充材料后再复核。"
+    
+    if has_quick_confirm:
+        return "该案例证据清晰，可快速确认，但仍建议人工核对。"
+    
+    # 其他组合
+    parts = []
+    if has_model_conflict:
+        parts.append("存在模型结论冲突")
+    if has_incomplete_view:
+        parts.append("视角不完整")
+    if has_liability_sensitive:
+        parts.append("责任敏感")
+    if has_insufficient_evidence:
+        parts.append("证据不足")
+    
+    if parts:
+        return f"该案例{', '.join(parts)}，建议人工复核。"
+    
+    return "该案例需人工复核确认。"
+
+
+def _get_str(value: Any) -> str:
+    """安全转换为字符串"""
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def map_route_type_to_cn(route_type: str) -> str:
@@ -261,7 +385,7 @@ def map_route_type_to_cn(route_type: str) -> str:
     将路由类型映射为中文
     
     Args:
-        route_type: 路由类型（manual_review_required / proceed_to_liability / insufficient_evidence）
+        route_type: 路由类型
     
     Returns:
         中文路由类型
@@ -271,4 +395,4 @@ def map_route_type_to_cn(route_type: str) -> str:
         "proceed_to_liability": "快速确认",
         "insufficient_evidence": "补证复核"
     }
-    return mapping.get(route_type, "未知")
+    return mapping.get(route_type, "重点复核")

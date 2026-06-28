@@ -46,6 +46,107 @@ except Exception as e:
     print(f"[WARN] video_keyframe not loaded: {e}")
 
 app = FastAPI()
+import pandas as pd
+from pathlib import Path
+
+# 直接在 main.py 中加载数据
+_excel_data_cache = {}
+def load_data_for_main():
+    global _excel_data_cache
+    excel_path = Path("事故案例汇总表.xlsx")
+    if not excel_path.exists():
+        excel_path = Path(r"I:\accident_app\事故案例汇总表.xlsx")
+    if not excel_path.exists():
+        print("[ERROR] 找不到 Excel 文件")
+        return
+    df = pd.read_excel(excel_path, engine="openpyxl")
+    df.columns = df.columns.str.strip()
+    for _, row in df.iterrows():
+        case_id = str(row.get("case_id", "")).strip()
+        if case_id and case_id != "案例编号":
+            _excel_data_cache[case_id] = row.to_dict()
+    print(f"[INIT] 在 main.py 中加载了 {len(_excel_data_cache)} 个案例数据")
+
+# 立即加载
+load_data_for_main()
+from backend.services.review_assist_service import load_excel_data, _excel_case_data
+@app.get("/ping")
+async def ping():
+    return {"status": "ok"}
+# ============================================================
+# 复核辅助路由（必须放在所有 app.mount 之前）
+# ============================================================
+
+from backend.services.review_assist_service import (
+    get_review_assist,
+    batch_generate,
+    get_statistics
+)
+
+@app.get("/api/cases/{case_id}/review-assist")
+async def api_get_review_assist(case_id: str):
+    print(f"[DEBUG] === 路由被调用，case_id={case_id} ===")
+    case_data = _excel_data_cache.get(case_id)
+    if case_data is None:
+        raise HTTPException(status_code=404, detail=f"案例 {case_id} 不存在")
+    
+    # 直接在这里生成复核辅助结果，或者调用 review_assist_service 的生成函数并传入 case_data
+    from backend.services.review_assist_service import generate_review_assist_from_data
+    try:
+        result = generate_review_assist_from_data(case_id, case_data)
+        return {"success": True, "data": result.dict()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成复核辅助信息失败: {str(e)}")
+
+@app.post("/api/cases/{case_id}/review-assist/generate")
+async def api_generate_review_assist(case_id: str):
+    try:
+        result = get_review_assist(case_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"案例 {case_id} 不存在")
+        return {"success": True, "data": result.dict()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成复核辅助信息失败: {str(e)}")
+
+@app.post("/api/review-assist/batch-generate")
+async def api_batch_generate_review_assist(data: dict):
+    case_ids = data.get("case_ids", [])
+    if not case_ids:
+        raise HTTPException(status_code=400, detail="case_ids 不能为空")
+    try:
+        results = batch_generate(case_ids)
+        return {
+            "success": True,
+            "data": {
+                "generated": len(results),
+                "results": [r.dict() for r in results]
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"批量生成失败: {str(e)}")
+
+@app.get("/api/cases/{case_id}/review-assist")
+async def api_get_review_assist(case_id: str):
+    print(f"[DEBUG] === 路由被调用，case_id={case_id} ===")
+    print(f"[DEBUG] _excel_case_data 长度: {len(_excel_case_data)}")
+    # 打印所有键，找出 CASE-024
+    all_keys = list(_excel_case_data.keys())
+    print(f"[DEBUG] 所有键: {all_keys}")
+    # 查找包含 CASE-024 的键
+    for key in all_keys:
+        if "CASE-024" in key or "CASE-024" in key.upper():
+            print(f"[DEBUG] 找到疑似键: '{key}' (repr: {repr(key)})")
+    try:
+        result = get_review_assist(case_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"案例 {case_id} 不存在")
+        return {"success": True, "data": result.dict()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取复核辅助信息失败: {str(e)}")
 
 security = HTTPBearer()
 
@@ -780,6 +881,11 @@ def _get_fused_evidence(case_id: str) -> Dict[str, Any]:
 @app.on_event("startup")
 def startup():
     init_db()
+    # 加载 Excel 数据
+    from backend.services.review_assist_service import load_excel_data
+    load_excel_data("事故案例汇总表.xlsx")
+
+    # 其余代码...
     # 确保 fused_evidence 表存在
     try:
         from backend.database import get_db_conn
@@ -2145,70 +2251,6 @@ async def api_evidence_consistency(case_id: str):
         raise HTTPException(status_code=500, detail=f"一致性检测失败: {str(e)}")
 
 # ---------------------------------------------------------------------------
-# 复核辅助 API（Task 6）
-# ---------------------------------------------------------------------------
-@app.get("/api/cases/{case_id}/review-assist")
-async def api_get_review_assist(case_id: str):
-    """获取复核辅助结果"""
-    try:
-        from backend.services.review_assist_service import get_review_assist_from_fused_evidence
-        
-        # 尝试从融合证据包获取
-        fused = _get_fused_evidence(case_id)
-        result = get_review_assist_from_fused_evidence(case_id, fused)
-        
-        if not result:
-            # 如果融合证据包中没有，从数据库获取案件信息
-            case = get_case(case_id)
-            if not case:
-                raise HTTPException(status_code=404, detail="案件不存在")
-            
-            # 构建基础 case_data
-            from backend.services.review_focus_service import generate_review_assist
-            case_data = {
-                "system_route": "manual_review_required",
-                "type_conflict_detected": False,
-                "evidence_completeness_score": 7,
-                "Case Perspective": "unknown",
-                "ego_vehicle_present": False,
-                "yolo_confidence": 0.0,
-                "qwen_confidence": 0.0,
-                "yolo_candidate_type": "unknown",
-                "qwen_candidate_type": "unknown",
-                "route_reason": ""
-            }
-            result = generate_review_assist(case_id, case_data)
-        
-        return {"success": True, "data": result}
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取复核辅助结果失败: {str(e)}")
-
-@app.post("/api/cases/{case_id}/review-assist/generate")
-async def api_generate_review_assist(case_id: str):
-    """生成/刷新复核辅助结果"""
-    try:
-        from backend.services.review_assist_service import get_review_assist_from_fused_evidence
-        
-        # 从融合证据包生成
-        fused = _get_fused_evidence(case_id)
-        result = get_review_assist_from_fused_evidence(case_id, fused)
-        
-        if not result:
-            raise HTTPException(status_code=400, detail="无法生成复核辅助结果，请先完成视频分析和证据融合")
-        
-        return {"success": True, "data": result}
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"生成复核辅助结果失败: {str(e)}")
-
-# ---------------------------------------------------------------------------
 # 门控决策 API（Task 1: 统一门控控制器）
 # ---------------------------------------------------------------------------
 class EvidenceGateRequest(BaseModel):
@@ -2496,6 +2538,9 @@ if _serve_static and DIST_DIR.exists() and (DIST_DIR / "index.html").exists():
     print("[INFO] Production mode: serving frontend from dist/")
 elif not _serve_static:
     print("[INFO] SERVE_STATIC=false, frontend served by external proxy (e.g. Nginx)")
+
+
+
 
 if __name__ == "__main__":
     import uvicorn
