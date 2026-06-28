@@ -124,6 +124,60 @@
         </div>
       </div>
 
+      <!-- 复核辅助卡片 -->
+      <div class="review-assist-card card-surface" v-if="reviewAssist">
+        <h2 class="section-title">复核辅助</h2>
+        <div class="review-assist-grid">
+          <div class="assist-row">
+            <span class="assist-label">路由类型</span>
+            <span class="assist-value route-badge" :class="routeClass(reviewAssist.route_type_cn)">{{ reviewAssist.route_type_cn }}</span>
+          </div>
+          <div class="assist-row">
+            <span class="assist-label">复核优先级</span>
+            <span class="assist-value priority-badge" :class="priorityClass(reviewAssist.review_priority_level)">
+              {{ reviewAssist.review_priority_level }}，{{ reviewAssist.review_priority_score }} 分
+            </span>
+          </div>
+          <div class="assist-row">
+            <span class="assist-label">复核重点</span>
+            <div class="assist-tags">
+              <span v-for="f in reviewAssist.review_focus" :key="f" class="focus-tag">{{ f }}</span>
+            </div>
+          </div>
+          <div class="assist-row">
+            <span class="assist-label">证据状态</span>
+            <span class="assist-value evidence-badge" :class="evidenceClass(reviewAssist.evidence_status)">
+              {{ reviewAssist.evidence_status }}
+            </span>
+          </div>
+          <div class="assist-row">
+            <span class="assist-label">冲突摘要</span>
+            <span class="assist-value assist-text">{{ reviewAssist.conflict_summary }}</span>
+          </div>
+          <div class="assist-row" v-if="reviewAssist.evidence_required_items?.length">
+            <span class="assist-label">补证建议</span>
+            <ul class="assist-list">
+              <li v-for="(item, idx) in reviewAssist.evidence_required_items" :key="idx">{{ item }}</li>
+            </ul>
+          </div>
+          <div class="assist-row">
+            <span class="assist-label">风险提示</span>
+            <span class="assist-value risk-note">{{ reviewAssist.risk_notes }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="review-assist-loading card-surface" v-else-if="state.reviewAssistLoading">
+        <p class="loading-text">正在加载复核辅助...</p>
+      </div>
+      <div class="review-assist-generate card-surface" v-else-if="!state.reviewAssistLoading && !reviewAssist && currentCaseId()">
+        <div class="generate-hint">
+          <p>暂无复核辅助结果</p>
+          <button class="btn btn-secondary" @click="generateReviewAssist" :disabled="generating">
+            {{ generating ? '生成中...' : '生成复核辅助' }}
+          </button>
+        </div>
+      </div>
+
       <!-- 审核操作区域 -->
       <div class="review-form card-surface" v-if="!state.manualReview.submitted">
         <h2 class="section-title">复核操作</h2>
@@ -320,7 +374,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
-import { CasesAPI, getCurrentUser } from '../api/index.js'
+import { CasesAPI, getCurrentUser, ReviewAssistAPI } from '../api/index.js'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
@@ -355,6 +409,67 @@ const reviewNote = ref(state.manualReview.note || '')
 const editingLiabilities = ref([])
 const reviews = ref([])
 const submitting = ref(false)
+const reviewAssist = ref(null)
+const generating = ref(false)
+
+// 获取复核辅助结果
+async function fetchReviewAssist() {
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) return
+  state.reviewAssistLoading = true
+  state.reviewAssistError = null
+  try {
+    const result = await ReviewAssistAPI.get(caseId)
+    if (result.success && result.data) {
+      reviewAssist.value = result.data
+      state.reviewAssist = result.data
+    }
+  } catch (err) {
+    console.warn('获取复核辅助失败:', err)
+    state.reviewAssistError = err.message
+  } finally {
+    state.reviewAssistLoading = false
+  }
+}
+
+// 生成复核辅助结果
+async function generateReviewAssist() {
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) return
+  generating.value = true
+  try {
+    const result = await ReviewAssistAPI.generate(caseId)
+    if (result.success && result.data) {
+      reviewAssist.value = result.data
+      state.reviewAssist = result.data
+      notify({ title: '生成成功', message: '复核辅助结果已生成', type: 'success' })
+    }
+  } catch (err) {
+    console.error('生成复核辅助失败:', err)
+    notify({ title: '生成失败', message: err.message || '请稍后重试', type: 'error' })
+  } finally {
+    generating.value = false
+  }
+}
+
+// 辅助 class 映射
+function routeClass(routeType) {
+  if (routeType === '重点复核') return 'route-review'
+  if (routeType === '快速确认') return 'route-quick'
+  if (routeType === '补证复核') return 'route-evidence'
+  return 'route-review'
+}
+function priorityClass(level) {
+  if (level === '高') return 'priority-high'
+  if (level === '中') return 'priority-medium'
+  return 'priority-low'
+}
+function evidenceClass(status) {
+  if (status === '证据充分') return 'evi-sufficient'
+  if (status === '证据有冲突') return 'evi-conflict'
+  if (status === '证据不足') return 'evi-insufficient'
+  return 'evi-check'
+}
 
 // 获取历史复核记录
 async function fetchReviews() {
@@ -379,6 +494,7 @@ async function fetchReviews() {
 
 onMounted(() => {
   fetchReviews()
+  fetchReviewAssist()
 })
 
 const hasAnalysis = computed(() => {
@@ -1665,5 +1781,140 @@ const parseMarkdown = (text) => {
   .btn {
     width: 100%;
   }
+}
+
+/* ===== 复核辅助卡片样式 ===== */
+.review-assist-card {
+  background: var(--bg-primary);
+  border-left: 4px solid var(--primary-500);
+}
+
+.review-assist-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.assist-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.assist-label {
+  min-width: 80px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.assist-value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.assist-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* 路由类型 */
+.route-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.route-badge.route-review { background: rgba(245, 158, 11, 0.1); color: var(--warning-500); }
+.route-badge.route-quick { background: rgba(34, 197, 94, 0.1); color: var(--success-500); }
+.route-badge.route-evidence { background: rgba(59, 130, 246, 0.1); color: var(--primary-500); }
+
+/* 优先级 */
+.priority-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.priority-badge.priority-high { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+.priority-badge.priority-medium { background: rgba(245, 158, 11, 0.12); color: var(--warning-500); }
+.priority-badge.priority-low { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+
+/* 复核重点标签 */
+.assist-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.focus-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--primary-500);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+/* 证据状态 */
+.evidence-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.evidence-badge.evi-sufficient { background: rgba(34, 197, 94, 0.1); color: var(--success-500); }
+.evidence-badge.evi-conflict { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
+.evidence-badge.evi-insufficient { background: rgba(245, 158, 11, 0.1); color: var(--warning-500); }
+.evidence-badge.evi-check { background: rgba(148, 163, 184, 0.1); color: var(--text-muted); }
+
+/* 补证列表 */
+.assist-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.assist-list li {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  padding-left: 1em;
+  position: relative;
+}
+.assist-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--primary-500);
+}
+
+/* 风险提示 */
+.risk-note {
+  color: #ef4444;
+  font-weight: 500;
+}
+
+/* 加载和生成提示 */
+.review-assist-loading .loading-text,
+.review-assist-generate .generate-hint {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-4);
+}
+.generate-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
 }
 </style>

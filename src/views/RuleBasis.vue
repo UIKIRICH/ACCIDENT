@@ -149,24 +149,24 @@
       </div>
 
       <div class="default-rules card-surface">
-        <h2 class="section-title">标准规则</h2>
+        <h2 class="section-title">规则库 ({{ ruleLibrary.length }} 条)</h2>
         <div class="rules-grid">
-          <div v-for="rule in defaultRules" :key="rule.code" class="rule-card" :class="{ selected: isRuleSelected(rule.code) }">
+          <div v-for="rule in ruleLibrary" :key="rule.id" class="rule-card" :class="{ selected: isRuleSelected(rule.id) }">
             <div class="rule-header">
-              <span class="rule-code">{{ rule.code }}</span>
-              <span class="rule-category">{{ rule.category }}</span>
-              <button class="select-rule-btn" @click="toggleDefaultRuleSelect(rule)" v-if="!isRuleSelected(rule.code)">
+              <span class="rule-code">{{ rule.id }}</span>
+              <span class="rule-category">{{ rule.type }}</span>
+              <button class="select-rule-btn" @click="toggleRuleSelect(rule)" v-if="!isRuleSelected(rule.id)">
                 选择
               </button>
-              <button class="deselect-rule-btn" @click="toggleDefaultRuleSelect(rule)" v-else>
+              <button class="deselect-rule-btn" @click="toggleRuleSelect(rule)" v-else>
                 取消
               </button>
             </div>
-            <h3 class="rule-title">{{ rule.title }}</h3>
+            <h3 class="rule-title">{{ rule.name }}</h3>
             <p class="rule-content">{{ rule.content }}</p>
             <div class="rule-meta">
-              <span class="rule-scenario">适用场景: {{ rule.scenario }}</span>
-              <span class="rule-applied">应用次数: {{ rule.applied }}</span>
+              <span class="rule-scenario">适用场景: {{ rule.scene }}</span>
+              <span class="rule-applied">状态: {{ rule.status }}</span>
             </div>
           </div>
         </div>
@@ -235,7 +235,32 @@
         </div>
       </div>
 
-      <div class="dify-analysis-container" v-if="hasDifyResult">
+      <!-- 复核重点提示 -->
+      <div class="review-focus-hints card-surface" v-if="reviewAssist">
+        <h2 class="section-title">复核重点提示</h2>
+        <div class="focus-grid">
+          <div class="focus-header">
+            <span class="focus-label">复核重点</span>
+            <div class="focus-tags">
+              <span v-for="f in reviewAssist.review_focus" :key="f" class="focus-tag">{{ f }}</span>
+            </div>
+          </div>
+          <div class="focus-note">
+            <p class="note-title">建议人工核对</p>
+            <ul class="note-list">
+              <li v-if="reviewAssist.review_focus?.includes('模型结论冲突')">车辆行为是否支持当前责任建议</li>
+              <li v-if="reviewAssist.review_focus?.includes('规则依据需核对')">命中规则是否与结构化事实一致</li>
+              <li v-if="reviewAssist.review_focus?.includes('模型结论冲突')">千问语义判断与 YOLO 检测结果的差异</li>
+              <li v-if="reviewAssist.review_focus?.includes('责任敏感')">责任敏感事故类型，核对规则依据和责任建议</li>
+              <li v-if="reviewAssist.review_focus?.includes('视角不完整')">核对单视角下的车辆关系和事故过程</li>
+              <li v-if="reviewAssist.review_focus?.includes('证据不足')">补充证据后再核对责任分配</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dify分析区域，确认数据绑定与显示逻辑 -->
+        <div class="dify-analysis-container" v-if="hasDifyResult">
         <div class="dify-analysis-title">
           <div class="dify-icon-wrapper">
             <span class="dify-icon">🤖</span>
@@ -275,7 +300,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
-import { CasesAPI } from '../api/index.js'
+import { CasesAPI, ReviewAssistAPI } from '../api/index.js'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
@@ -312,7 +337,23 @@ const currentCaseId = () => {
 // 从后端加载命中规则
 const matchedRules = ref([])
 const loadingRules = ref(false)
-const loadError = ref('')
+const loadError = ref(null)
+const reviewAssist = ref(null)
+
+// 获取复核辅助数据
+async function fetchReviewAssist() {
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) return
+  try {
+    const result = await ReviewAssistAPI.get(caseId)
+    if (result.success && result.data) {
+      reviewAssist.value = result.data
+      state.reviewAssist = result.data
+    }
+  } catch (err) {
+    console.warn('获取复核辅助失败:', err)
+  }
+}
 
 async function fetchMatchedRules() {
   const caseId = currentCaseId()
@@ -354,6 +395,7 @@ async function fetchMatchedRules() {
 
 onMounted(() => {
   fetchMatchedRules()
+  fetchReviewAssist()
 })
 
 const categories = ['全部', '道路交通安全法', '实施条例', '地方法规', '司法解释']
@@ -369,19 +411,10 @@ const legalBasis = computed({
 
 const ruleLibrary = computed(() => {
   if (state.ruleLibrary.rules.length === 0) {
-    initRuleLibrary()
+    return []
   }
   return state.ruleLibrary.rules
 })
-
-const defaultRules = ref([
-  { code: 'R-01', category: '道路交通安全法', title: '追尾事故责任认定', content: '后车未保持安全距离导致追尾，后车承担全部责任。', scenario: '同向行驶追尾', applied: 156 },
-  { code: 'R-03', category: '实施条例', title: '安全距离规定', content: '同车道行驶应保持足以采取紧急制动措施的安全距离。', scenario: '制动不及', applied: 134 },
-  { code: 'R-04', category: '地方法规', title: '路口让行规则', content: '无信号灯路口应让右方来车先行。', scenario: '路口碰撞', applied: 87 },
-  { code: 'R-06', category: '道路交通安全法', title: '闯红灯责任规则', content: '违反信号灯通行导致事故，违规方承担全部责任。', scenario: '信号灯路口', applied: 203 },
-  { code: 'R-07', category: '实施条例', title: '变更车道规则', content: '变更车道时不得影响相关车道内行驶的机动车的正常行驶。', scenario: '变道碰撞', applied: 98 },
-  { code: 'R-08', category: '司法解释', title: '交通事故责任划分', content: '公安机关交通管理部门应当根据当事人的行为对发生道路交通事故所起的作用以及过错的严重程度，确定当事人的责任。', scenario: '综合判定', applied: 312 }
-])
 
 const filteredRules = computed(() => {
   let filtered = ruleLibrary.value
@@ -1368,5 +1401,73 @@ const parseMarkdown = (text) => {
   .rules-grid { grid-template-columns: 1fr; }
   .rule-actions { flex-direction: column; }
   .btn { width: 100%; }
+}
+
+/* 复核重点提示 */
+.review-focus-hints {
+  border-left: 4px solid var(--primary-500);
+}
+.focus-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.focus-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.focus-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 80px;
+}
+.focus-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.focus-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--primary-500);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+}
+.focus-note {
+  background: rgba(59, 130, 246, 0.04);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+.note-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-3);
+}
+.note-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.note-list li {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  padding-left: 1em;
+  position: relative;
+  line-height: 1.5;
+}
+.note-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--primary-500);
 }
 </style>

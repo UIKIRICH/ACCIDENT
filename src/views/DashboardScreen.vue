@@ -224,7 +224,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { StatsAPI, TasksAPI, HealthAPI } from '../api/index.js'
+import { StatsAPI, TasksAPI, HealthAPI, ReviewAssistAPI } from '../api/index.js'
 import { notify } from '../composables/useToast'
 
 const router = useRouter()
@@ -315,36 +315,43 @@ const manualRefresh = () => {
   notify({ title: '手动刷新', message: '正在获取最新态势数据', type: 'info' })
 }
 
-// 计算高风险 / 证据冲突案件
-const computeHighRiskCases = () => {
-  const cases = historyCases.value || []
-  const risky = cases
-    .filter(c => {
-      const status = c.status || ''
-      // 待复核 / 复核中 状态，或存在证据冲突标记
-      const isPendingReview =
-        status === '待复核' || status === '复核中' || status === 'pending_review'
-      const hasConflict =
-        c.evidence_conflict === true ||
-        c.has_conflict === true ||
-        c.conflict === true
-      return isPendingReview || hasConflict
-    })
-    .map(c => {
-      const status = c.status || '待处理'
-      const isPendingReview =
-        status === '待复核' || status === '复核中' || status === 'pending_review'
-      return {
-        caseId: c.id || c.caseId || '--',
-        title: c.title || c.accident_type || '未命名案件',
-        location: c.location || '未记录',
-        time: formatTime(c.submitted_at || c.created_at),
-        status,
-        riskLabel: isPendingReview ? '待复核' : '证据冲突',
-        riskClass: isPendingReview ? 'risk-medium' : 'risk-high'
-      }
-    })
-  highRiskCases.value = risky
+// 计算高风险 / 证据冲突案件 — 使用 review_assist 数据
+const computeHighRiskCases = async () => {
+  try {
+    const res = await ReviewAssistAPI.statistics()
+    if (!res.success || !res.data) {
+      highRiskCases.value = []
+      return
+    }
+    // 取高优先级案例 + 模型冲突案例的前 10 条
+    const cases = historyCases.value || []
+    const risky = cases
+      .filter(c => {
+        const status = c.status || ''
+        return status === '待处理' || status === '处理中' || status === '待分析' || status === '待复核'
+      })
+      .slice(0, 12)
+      .map(c => {
+        const status = c.status || '待处理'
+        // 从 review_assist 统计推断风险等级
+        const stats = res.data
+        const isHighRisk = stats.review_priority_level?.['高'] > 0 || stats.model_conflict_cases > 50
+        const typeConflict = stats.evidence_status?.['证据有冲突'] || 0
+        return {
+          caseId: c.id || c.caseId || '--',
+          title: c.title || c.accident_type || '未命名案件',
+          location: c.location || '未记录',
+          time: formatTime(c.submitted_at || c.created_at),
+          status,
+          riskLabel: isHighRisk ? '高优先级' : typeConflict > 80 ? '证据冲突' : '待处理',
+          riskClass: isHighRisk ? 'risk-high' : 'risk-medium'
+        }
+      })
+    highRiskCases.value = risky
+  } catch (e) {
+    console.warn('高风险案件加载失败:', e)
+    highRiskCases.value = []
+  }
 }
 
 // 格式化时间
@@ -401,52 +408,44 @@ const statCards = computed(() => [
   }
 ])
 
-// 事故类型分布（接口字段缺失时，从历史案例中统计兜底）
+// 事故类型分布 - 直接使用后台返回
 const accidentTypeDist = computed(() => {
-  const s = stats.value || {}
-  let dist = s.accident_type_dist || s.accidentTypeDist
-  if (!Array.isArray(dist) || dist.length === 0) {
-    // 从历史案例中按事故类型聚合
-    const counts = {}
-    historyCases.value.forEach(c => {
-      const type = c.accident_type || c.title || '未分类'
-      counts[type] = (counts[type] || 0) + 1
-    })
-    dist = Object.entries(counts).map(([name, count]) => ({ name, count }))
-  }
-  if (!dist || dist.length === 0) return []
+  const dist = (stats.value || {}).accidentTypeDist || []
+  if (!dist.length) return []
   const max = Math.max(...dist.map(d => Number(d.count) || 0), 1)
-  return dist
-    .slice(0, 6)
-    .map(d => ({
-      name: d.name || d.type || '未分类',
-      count: Number(d.count) || Number(d.value) || 0,
-      percent: Math.round(((Number(d.count) || Number(d.value) || 0) / max) * 100)
-    }))
+  return dist.slice(0, 8).map(d => ({
+    name: d.name || '未分类',
+    count: Number(d.count) || 0,
+    percent: Math.round(((Number(d.count) || 0) / max) * 100)
+  }))
 })
 
-// 规则命中 Top5（接口未提供时显示暂无数据）
+// 规则命中 Top5 - 直接使用后台返回
 const ruleHitTop = computed(() => {
-  const s = stats.value || {}
-  const dist = s.rule_hit_top || s.ruleHitTop
-  if (!Array.isArray(dist) || dist.length === 0) return []
+  const dist = (stats.value || {}).ruleHitTop || []
+  if (!dist.length) return []
   const max = Math.max(...dist.map(d => Number(d.count) || 0), 1)
-  return dist
-    .slice(0, 5)
-    .map(d => ({
-      name: d.name || d.rule_name || d.rule || '未命名',
-      count: Number(d.count) || Number(d.value) || 0,
-      percent: Math.round(((Number(d.count) || Number(d.value) || 0) / max) * 100)
-    }))
+  return dist.slice(0, 5).map(d => ({
+    name: d.name || '未命名',
+    count: Number(d.count) || 0,
+    percent: Math.round(((Number(d.count) || 0) / max) * 100)
+  }))
 })
 
-// 复核通过率
-const reviewPassed = computed(() => getStat('completedCases', 'completed'))
-const reviewPending = computed(() => getStat('pendingReview', 'pending_review'))
+// 复核通过率 - 使用后台 reviewStats
+const reviewPassed = computed(() => {
+  const rs = (stats.value || {}).reviewStats
+  return rs ? (rs.passed || 0) : getStat('completedCases', 'completed')
+})
+const reviewPending = computed(() => {
+  const rs = (stats.value || {}).reviewStats
+  return rs ? (rs.pending || 0) : getStat('pendingReview', 'pending_review')
+})
 const reviewPassRate = computed(() => {
+  const rs = (stats.value || {}).reviewStats
+  if (rs) return rs.passRate || 0
   const total = reviewPassed.value + reviewPending.value
-  if (total <= 0) return 0
-  return Math.round((reviewPassed.value / total) * 100)
+  return total > 0 ? Math.round((reviewPassed.value / total) * 100) : 0
 })
 // 环形图 conic-gradient 样式
 const ringStyle = computed(() => ({

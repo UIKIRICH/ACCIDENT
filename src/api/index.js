@@ -470,6 +470,22 @@ export const StatsAPI = {
   }
 }
 
+// 复核辅助 API
+export const ReviewAssistAPI = {
+  async get(caseId) {
+    return request('GET', `/api/cases/${caseId}/review-assist`)
+  },
+  async generate(caseId) {
+    return request('POST', `/api/cases/${caseId}/review-assist/generate`)
+  },
+  async batchGenerate(caseIds) {
+    return request('POST', '/api/review-assist/batch-generate', { case_ids: caseIds })
+  },
+  async statistics() {
+    return request('GET', '/api/review-assist/statistics')
+  }
+}
+
 // 健康检查API
 export const HealthAPI = {
   async check() {
@@ -484,5 +500,6 @@ export default {
   tasks: TasksAPI,
   flow: FlowAPI,
   stats: StatsAPI,
-  health: HealthAPI
+  health: HealthAPI,
+  reviewAssist: ReviewAssistAPI
 }

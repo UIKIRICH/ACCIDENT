@@ -30,6 +30,12 @@
             {{ item }}
           </button>
         </div>
+        <div class="sort-buttons">
+          <button class="filter-btn" :class="{ active: sortByPriority }" @click="togglePrioritySort">
+            按优先级排序
+            <span v-if="sortByPriority">{{ sortDesc ? '↓' : '↑' }}</span>
+          </button>
+        </div>
       </div>
       <div class="queue-list card-surface">
         <div class="list-header">
@@ -62,7 +68,16 @@
                 </span>
                 <span class="meta-item">
                   <span class="meta-icon" v-html="icons.user"></span>
-                  {{ item.status==='处理中' ? `处理人: ${item.reviewer || '张警官'}` : `预计处理时间: ${item.eta}` }}
+                  {{ item.status==='处理中' ? `处理人: ${item.reviewer || '待分配'}` : `预计处理时间: ${item.eta}` }}
+                </span>
+              </div>
+              <!-- 复核辅助信息 -->
+              <div class="item-review-assist" v-if="item.reviewAssist">
+                <span class="assist-col priority-col" :class="'priority-' + item.reviewAssist.review_priority_level">
+                  复核优先级: {{ item.reviewAssist.review_priority_level }} {{ item.reviewAssist.review_priority_score }}分
+                </span>
+                <span class="assist-col evidence-col" :class="evidenceColClass(item.reviewAssist.evidence_status)">
+                  {{ item.reviewAssist.evidence_status }}
                 </span>
               </div>
               <div class="item-actions">
@@ -156,6 +171,7 @@ import { computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
+import { ReviewAssistAPI } from '../api/index.js'
 import NavigationButtons from '../components/NavigationButtons.vue'
 
 const router = useRouter()
@@ -182,6 +198,43 @@ const page = ref(1)
 const pageSize = 5
 const cases = ref([])
 const loading = ref(false)
+const reviewAssistMap = ref({})
+const sortByPriority = ref(false)
+const sortDesc = ref(true)
+
+// 批量加载复核辅助数据
+async function loadReviewAssistData() {
+  const caseIds = cases.value.map(c => c.id)
+  if (caseIds.length === 0) return
+  try {
+    const result = await ReviewAssistAPI.batchGenerate(caseIds)
+    if (result.success && result.data?.results) {
+      const map = {}
+      result.data.results.forEach(r => {
+        map[r.case_id] = r
+      })
+      reviewAssistMap.value = map
+    }
+  } catch (err) {
+    console.warn('批量加载复核辅助失败:', err)
+  }
+}
+
+function togglePrioritySort() {
+  if (sortByPriority.value) {
+    sortDesc.value = !sortDesc.value
+  } else {
+    sortByPriority.value = true
+    sortDesc.value = true
+  }
+}
+
+function evidenceColClass(status) {
+  if (status === '证据充分') return 'evi-sufficient'
+  if (status === '证据有冲突') return 'evi-conflict'
+  if (status === '证据不足') return 'evi-insufficient'
+  return 'evi-check'
+}
 
 // 从后端 API 获取真实案例列表
 async function fetchCases() {
@@ -204,8 +257,10 @@ async function fetchCases() {
   }
 }
 
-onMounted(() => {
-  fetchCases()
+onMounted(async () => {
+  await fetchCases()
+  // 加载复核辅助数据（不阻塞页面显示）
+  loadReviewAssistData()
 })
 
 // 切换筛选条件时回到第一页
@@ -217,9 +272,9 @@ watch(activeFilter, () => {
 function mapCaseToWorkItem(c) {
   const status = c.status || '待分析'
   let eta = '已归档'
-  if (status === '待分析') eta = '30分钟'
-  else if (status === '待复核' || status === '复核中') eta = '1小时'
-  else if (status === '处理中') eta = '15分钟'
+  if (status === '待分析') eta = '排队中'
+  else if (status === '待复核' || status === '复核中') eta = '待人工审核'
+  else if (status === '处理中') eta = '分析中'
 
   return {
     id: c.id,
@@ -231,15 +286,24 @@ function mapCaseToWorkItem(c) {
     eta,
     priority: c.priority || '中',
     weather: c.weather || '',
-    roadEnv: c.road_env || ''
+    roadEnv: c.road_env || '',
+    reviewAssist: reviewAssistMap.value[c.id] || null
   }
 }
 
 const workItems = computed(() => cases.value.map(mapCaseToWorkItem))
 
 const filteredCases = computed(() => {
-  if (activeFilter.value === '全部') return workItems.value
-  return workItems.value.filter((item) => item.status === activeFilter.value)
+  let list = activeFilter.value === '全部'
+    ? workItems.value
+    : workItems.value.filter((item) => item.status === activeFilter.value)
+  
+  // 按优先级排序
+  if (sortByPriority.value) {
+    const getScore = (item) => item.reviewAssist?.review_priority_score ?? 0
+    list = [...list].sort((a, b) => sortDesc.value ? getScore(b) - getScore(a) : getScore(a) - getScore(b))
+  }
+  return list
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredCases.value.length / pageSize)))
@@ -823,6 +887,33 @@ const goToHistoryCases = () => {
 }
 
 .page-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 复核辅助列 */
+.sort-buttons {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+.item-review-assist {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 4px 0;
+}
+.assist-col {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+.priority-col.priority-高 { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
+.priority-col.priority-中 { background: rgba(245, 158, 11, 0.1); color: var(--warning-500); }
+.priority-col.priority-低 { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+.evidence-col.evi-sufficient { background: rgba(34, 197, 94, 0.1); color: var(--success-500); }
+.evidence-col.evi-conflict { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
+.evidence-col.evi-insufficient { background: rgba(245, 158, 11, 0.1); color: var(--warning-500); }
+.evidence-col.evi-check { background: rgba(148, 163, 184, 0.1); color: var(--text-muted); }
 
 @media (max-width: 768px) {
   .queue-stats { grid-template-columns: repeat(2, 1fr); }

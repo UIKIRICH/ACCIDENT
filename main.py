@@ -1765,6 +1765,11 @@ YOLO 视频检测模型输出：
     gateway_summary_text = "\n".join(gateway_summary_parts)
     
     # ========== 6. 填充模板变量 ==========
+    # 门控状态文本
+    compensation_triggered = fusion_result.get("compensation_triggered", False)
+    conflict_triggered = fusion_result.get("conflict_detected", False)
+    insufficient_triggered = fusion_result.get("manual_review_required", True)
+
     summary_text = template.format(
         gateway_summary=gateway_summary_text,
         final_status=final_status,
@@ -1774,7 +1779,10 @@ YOLO 视频检测模型输出：
         conflict_detected=fusion_result.get("conflict_detected", False),
         evidence_sufficient=not fusion_result.get("manual_review_required", True),
         yolo_output=json.dumps(yolo_raw, ensure_ascii=False, indent=2),
-        qwen_output=qwen_raw_text or "（千问未返回有效分析结果）"
+        qwen_output=qwen_raw_text or "（千问未返回有效分析结果）",
+        compensation_status="已触发（原因：存在类型冲突需人工判定）" if compensation_triggered else "未触发",
+        conflict_status="已触发（原因：检测到证据矛盾）" if conflict_triggered else "未触发",
+        insufficient_status="已触发（原因：关键证据缺失）" if insufficient_triggered else "未触发",
     )
 
     # ========== 5. 追加两部分原始输出 ==========
@@ -1917,58 +1925,45 @@ def _call_dify_workflow(inputs: Dict[str, Any], user: str = "accident_app", resp
     payload = {"inputs": inputs or {}, "response_mode": response_mode or settings["default_response_mode"], "user": user or "accident_app"}
     if conversation_id:
         payload["conversation_id"] = conversation_id
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json, text/event-stream;q=0.9, text/plain;q=0.8", "Accept-Encoding": "identity", "Connection": "close"}
-    req = urllib_request.Request(workflow_url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "application/json"}
     attempts = retry_count + 1
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            with urllib_request.urlopen(req, timeout=timeout_sec) as resp:
-                content_type = str(resp.headers.get("Content-Type", ""))
-                raw_bytes = resp.read()
-            return _parse_dify_raw_response(raw_bytes, content_type)
-        except urllib_error.HTTPError as exc:
-            last_error = exc
-            status_code = int(exc.code or 500)
-            raw_bytes = exc.read() or b""
-            if _is_retryable_dify_http_status(status_code) and attempt < attempts:
-                time.sleep(retry_backoff_sec * attempt)
-                continue
-            raw = raw_bytes.decode("utf-8", errors="ignore")
-            try:
-                dify_error = json.loads(raw) if raw else {}
-            except Exception:
-                dify_error = {"raw": raw[:1200]}
-            raise HTTPException(status_code=status_code, detail={"message": "Dify workflow request failed", "dify_error": dify_error})
-        except IncompleteRead as exc:
-            last_error = exc
-            partial = bytes(exc.partial or b"")
-            if partial:
+            resp = requests.post(workflow_url, json=payload, headers=headers, timeout=timeout_sec)
+            status_code = resp.status_code
+            content_type = resp.headers.get("Content-Type", "")
+            raw_text = resp.text
+            if status_code >= 400:
+                if _is_retryable_dify_http_status(status_code) and attempt < attempts:
+                    time.sleep(retry_backoff_sec * attempt)
+                    last_error = Exception(f"HTTP {status_code}: {raw_text[:500]}")
+                    continue
                 try:
-                    return _parse_dify_raw_response(partial, "")
+                    dify_error = json.loads(raw_text) if raw_text else {}
                 except Exception:
-                    pass
-            if attempt < attempts:
-                time.sleep(retry_backoff_sec * attempt)
-                continue
-            raise HTTPException(status_code=502, detail="Dify response interrupted (IncompleteRead).")
-        except urllib_error.URLError as exc:
-            last_error = exc
-            if attempt < attempts:
-                time.sleep(retry_backoff_sec * attempt)
-                continue
-            raise HTTPException(status_code=503, detail=f"Dify service unreachable: {str(exc.reason) if exc.reason else str(exc)}")
-        except TimeoutError as exc:
-            last_error = exc
+                    dify_error = {"raw": raw_text[:1200]}
+                raise HTTPException(status_code=status_code, detail={"message": "Dify workflow request failed", "dify_error": dify_error})
+            return _parse_dify_raw_response(raw_text.encode("utf-8"), content_type)
+        except HTTPException:
+            raise
+        except requests.exceptions.Timeout:
+            last_error = Exception("timeout")
             if attempt < attempts:
                 time.sleep(retry_backoff_sec * attempt)
                 continue
             raise HTTPException(status_code=504, detail="Dify workflow request timed out.")
+        except requests.exceptions.ConnectionError as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(retry_backoff_sec * attempt)
+                continue
+            raise HTTPException(status_code=503, detail=f"Dify service unreachable: {str(exc)}")
         except ValueError as exc:
             raise HTTPException(status_code=502, detail=f"Dify response format invalid: {exc}")
         except Exception as exc:
             last_error = exc
-            if "IncompleteRead" in str(exc) and attempt < attempts:
+            if attempt < attempts:
                 time.sleep(retry_backoff_sec * attempt)
                 continue
             raise HTTPException(status_code=500, detail=f"Dify workflow call failed: {str(exc)}")

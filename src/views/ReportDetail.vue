@@ -159,6 +159,41 @@
         </div>
       </div>
 
+      <!-- 复核辅助结果 -->
+      <div class="report-section" v-if="reviewAssist">
+        <h2 class="section-title">{{ fusedEvidence ? '七' : '六' }}、复核辅助结果</h2>
+        <div class="review-assist-grid">
+          <div class="ra-row">
+            <span class="ra-label">系统路由</span>
+            <span class="ra-value">{{ reviewAssist.route_type_cn }}</span>
+          </div>
+          <div class="ra-row">
+            <span class="ra-label">复核优先级</span>
+            <span class="ra-value ra-priority" :class="'ra-prio-' + reviewAssist.review_priority_level">
+              {{ reviewAssist.review_priority_level }}，{{ reviewAssist.review_priority_score }} 分
+            </span>
+          </div>
+          <div class="ra-row">
+            <span class="ra-label">复核重点</span>
+            <span class="ra-value">{{ reviewAssist.review_focus?.join('、') || '无' }}</span>
+          </div>
+          <div class="ra-row">
+            <span class="ra-label">证据状态</span>
+            <span class="ra-value">{{ reviewAssist.evidence_status }}</span>
+          </div>
+          <div class="ra-row">
+            <span class="ra-label">冲突摘要</span>
+            <span class="ra-value">{{ reviewAssist.conflict_summary }}</span>
+          </div>
+          <div class="ra-row" v-if="reviewAssist.evidence_required_items?.length">
+            <span class="ra-label">补证建议</span>
+            <ul class="ra-list">
+              <li v-for="(item, idx) in reviewAssist.evidence_required_items" :key="idx">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <div class="report-footer">
         <div class="footer-info">
           <span>报告生成时间: {{ new Date().toLocaleString('zh-CN') }}</span>
@@ -174,7 +209,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAccidentFlow } from '../stores/useAccidentFlow'
 import { notify } from '../composables/useToast'
-import { CasesAPI } from '../api/index.js'
+import { CasesAPI, ReviewAssistAPI } from '../api/index.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -182,6 +217,7 @@ const { state, setCurrentCase, getCurrentCase, isValidCaseId } = useAccidentFlow
 
 // 视频语义校验 + 证据融合 数据
 const fusedEvidence = ref(null)
+const reviewAssist = ref(null)
 
 // ── 字段中文映射（避免裸露英文枚举值） ──
 const CAMERA_VIEW_MAP = {
@@ -276,8 +312,23 @@ async function loadCaseLiability() {
   }
 }
 
+async function loadReviewAssist() {
+  const caseId = currentCaseId()
+  if (!isValidCaseId(caseId)) return
+  try {
+    const result = await ReviewAssistAPI.get(caseId)
+    if (result.success && result.data) {
+      reviewAssist.value = result.data
+      state.reviewAssist = result.data
+    }
+  } catch (err) {
+    console.warn('加载复核辅助失败:', err)
+  }
+}
+
 onMounted(() => {
   loadCaseLiability()
+  loadReviewAssist()
 })
 
 const vehicleLiabilities = computed(() => {
@@ -743,6 +794,54 @@ const downloadReport = async () => {
   color: var(--text-secondary);
   margin: 0;
   line-height: var(--leading-relaxed);
+}
+
+/* 复核辅助 */
+.review-assist-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.ra-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.ra-label {
+  min-width: 80px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.ra-value {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+.ra-priority { font-weight: 600; }
+.ra-prio-高 { color: #ef4444; }
+.ra-prio-中 { color: var(--warning-500); }
+.ra-prio-低 { color: var(--text-muted); }
+.ra-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ra-list li {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  padding-left: 1em;
+  position: relative;
+}
+.ra-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--primary-500);
 }
 
 .report-footer {

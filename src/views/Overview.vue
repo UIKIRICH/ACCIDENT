@@ -414,60 +414,76 @@ const stats = computed(() => ({
   ruleCount: statsData.value.activeRules || state.ruleLibrary.rules.length || 0
 }))
 
-const statsCards = computed(() => [
-  {
-    key: 'total',
-    label: '事故总数',
-    value: stats.value.totalCases,
-    unit: '件',
-    change: '+12',
-    changeClass: 'positive',
-    changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
-    cardClass: 'card-blue',
-    iconClass: 'icon-blue',
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill-opacity="0.2"/></svg>`,
-    sparkline: 'M0,25 Q10,20 20,22 T40,18 T60,15 T80,10 T100,8'
-  },
-  {
-    key: 'analyzed',
-    label: '已分析案件',
-    value: stats.value.analyzedCases,
-    unit: '件',
-    change: '+8',
-    changeClass: 'positive',
-    changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
-    cardClass: 'card-green',
-    iconClass: 'icon-green',
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill-opacity="0.2"/><polyline points="8 12 11 15 16 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>`,
-    sparkline: 'M0,20 Q15,18 25,15 T50,12 T75,8 T100,5'
-  },
-  {
-    key: 'pending',
-    label: '待复核案件',
-    value: stats.value.pendingReview,
-    unit: '件',
-    change: '+3',
-    changeClass: 'negative',
-    changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`,
-    cardClass: 'card-orange',
-    iconClass: 'icon-orange',
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" fill-opacity="0.2"/><line x1="12" y1="9" x2="12" y2="13" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="17" r="1"/></svg>`,
-    sparkline: 'M0,15 Q20,18 35,20 T60,22 T80,18 T100,20'
-  },
-  {
-    key: 'rules',
-    label: '规则数量',
-    value: stats.value.ruleCount,
-    unit: '条',
-    change: '+2',
-    changeClass: 'positive',
-    changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
-    cardClass: 'card-purple',
-    iconClass: 'icon-purple',
-    icon: `<svg viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3" fill-opacity="0.2"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" fill="none" stroke="currentColor"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" fill="none" stroke="currentColor"/></svg>`,
-    sparkline: 'M0,22 Q10,20 20,18 T45,15 T70,12 T100,10'
-  }
-])
+const statsCards = computed(() => {
+  const total = stats.value.totalCases
+  const analyzed = stats.value.analyzedCases
+  const pending = stats.value.pendingReview
+  const rules = stats.value.ruleCount
+
+  // 动态计算变化量：基于每周趋势或百分比
+  const weeklyTrend = statsData.value?.weeklyTrend || []
+  const totalThisWeek = weeklyTrend.length
+    ? weeklyTrend.slice(-7).reduce((sum, d) => sum + (d.cnt || 0), 0)
+    : 0
+
+  // 已分析占比
+  const analyzedRatio = total > 0 ? Math.round((analyzed / total) * 100) : 0
+
+  return [
+    {
+      key: 'total',
+      label: '事故总数',
+      value: total,
+      unit: '件',
+      change: totalThisWeek > 0 ? `本周 ${totalThisWeek}` : `总计 ${total}`,
+      changeClass: 'positive',
+      changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
+      cardClass: 'card-blue',
+      iconClass: 'icon-blue',
+      icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill-opacity="0.2"/></svg>`,
+      sparkline: 'M0,25 Q10,20 20,22 T40,18 T60,15 T80,10 T100,8'
+    },
+    {
+      key: 'analyzed',
+      label: '已分析案件',
+      value: analyzed,
+      unit: '件',
+      change: `占比 ${analyzedRatio}%`,
+      changeClass: 'positive',
+      changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
+      cardClass: 'card-green',
+      iconClass: 'icon-green',
+      icon: `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill-opacity="0.2"/><polyline points="8 12 11 15 16 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>`,
+      sparkline: 'M0,20 Q15,18 25,15 T50,12 T75,8 T100,5'
+    },
+    {
+      key: 'pending',
+      label: '待复核案件',
+      value: pending,
+      unit: '件',
+      change: pending > 0 ? `待处理 ${pending}` : '暂无待复核',
+      changeClass: pending > 10 ? 'negative' : 'positive',
+      changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`,
+      cardClass: 'card-orange',
+      iconClass: 'icon-orange',
+      icon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" fill-opacity="0.2"/><line x1="12" y1="9" x2="12" y2="13" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="17" r="1"/></svg>`,
+      sparkline: 'M0,15 Q20,18 35,20 T60,22 T80,18 T100,20'
+    },
+    {
+      key: 'rules',
+      label: '规则数量',
+      value: rules,
+      unit: '条',
+      change: `已启用 ${rules}`,
+      changeClass: 'positive',
+      changeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
+      cardClass: 'card-purple',
+      iconClass: 'icon-purple',
+      icon: `<svg viewBox="0 0 24 24" fill="currentColor"><ellipse cx="12" cy="5" rx="9" ry="3" fill-opacity="0.2"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" fill="none" stroke="currentColor"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" fill="none" stroke="currentColor"/></svg>`,
+      sparkline: 'M0,22 Q10,20 20,18 T45,15 T70,12 T100,10'
+    }
+  ]
+})
 
 
 

@@ -148,6 +148,9 @@ const initialState = () => ({
       modifiedRules: []
     }
   },
+  reviewAssist: null,
+  reviewAssistLoading: false,
+  reviewAssistError: null,
   ruleLibrary: {
     rules: [
       {

@@ -20,3 +20,4 @@ backend/uploaded_images/
 backend/keyframes/
 yolov8n.pt
 outputs/
+backend/tmp/

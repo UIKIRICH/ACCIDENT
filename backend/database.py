@@ -754,7 +754,7 @@ def get_case(case_id: str) -> Optional[Dict[str, Any]]:
 def update_case(case_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     allowed_fields = {
         "title", "accident_type", "location", "status", "description",
-        "weather", "road_env", "priority", "reviewer", "eta",
+        "weather", "road_env", "priority", "reviewer", "eta", "submitted_at",
     }
     db = get_db()
     try:
@@ -994,9 +994,102 @@ def get_stats() -> Dict[str, Any]:
             "activeRules": active_rules,
             "todayNew": today_new,
             "weeklyTrend": weekly_trend,
+            # 事故类型分布
+            "accidentTypeDist": _get_accident_type_dist(db),
+            # 规则命中 Top5
+            "ruleHitTop": _get_rule_hit_top(db),
+            # 复核统计（通过率）
+            "reviewStats": _get_review_stats(db, completed, pending_review, total_cases),
         }
     finally:
         db.close()
+
+
+def _get_accident_type_dist(db) -> List[Dict[str, Any]]:
+    """按 accident_type 聚合案例数"""
+    from sqlalchemy import func
+    rows = db.query(Case.accident_type, func.count(Case.id)).group_by(Case.accident_type).all()
+    dist = []
+    for r in rows:
+        name = r[0] or "未分类"
+        if not name.strip():
+            name = "未分类"
+        dist.append({"name": name, "count": r[1]})
+    dist.sort(key=lambda x: x["count"], reverse=True)
+    return dist
+
+
+def _get_rule_hit_top(db) -> List[Dict[str, Any]]:
+    """统计 matched_rules 命中次数 Top5"""
+    result = []
+    try:
+        from sqlalchemy import text
+        conn = db.connection()
+        rows = conn.execute(
+            text("SELECT rule_name, COUNT(*) as cnt FROM matched_rules GROUP BY rule_name ORDER BY cnt DESC LIMIT 5")
+        ).fetchall()
+        result = [{"name": r[0] or "未知规则", "count": r[1]} for r in rows if r[0]]
+    except Exception:
+        pass
+
+    # matched_rules 无数据时，从规则库取 Top5
+    if len(result) < 3:
+        try:
+            rules = db.query(Rule).filter(Rule.status == "启用").all()
+            if not rules:
+                rules = db.query(Rule).all()
+            from sqlalchemy import func
+            for rule in rules[:5]:
+                name = rule.name or "未命名规则"
+                cnt = db.query(Case).filter(Case.accident_type == rule.type).count()
+                if cnt > 0:
+                    result.append({"name": name, "count": cnt})
+            result.sort(key=lambda x: x["count"], reverse=True)
+            result = result[:5]
+        except Exception:
+            pass
+
+    return result[:5]
+
+
+def _get_review_stats(db, completed: int, pending_review: int, total: int) -> Dict[str, Any]:
+    """复核通过率统计 — 已完成 / (已完成 + 驳回)，综合各状态案例数量"""
+    # 驳回（复核未通过）案例数
+    rejected = db.query(Case).filter(Case.status == "驳回").count()
+    # 复核中的案例数
+    reviewing = db.query(Case).filter(Case.status == "复核中").count()
+
+    # 高优先级统计 — 从复核中和待复核中估算
+    high_risk = reviewing + pending_review
+
+    # 冲突案例 — 从 Excel 缓存获取
+    conflict_cases = 0
+    try:
+        from main import _excel_data_cache
+        for row in _excel_data_cache.values():
+            if isinstance(row, dict):
+                if row.get("type_conflict_detected") == "是":
+                    conflict_cases += 1
+    except Exception:
+        pass
+
+    # 复核通过率 = 通过 / (通过 + 驳回)
+    passed = completed
+    reviewed_total = passed + rejected
+    pass_rate = round((passed / reviewed_total) * 100) if reviewed_total > 0 else 0
+
+    # 待复核：待复核 + 复核中
+    pending_total = pending_review + reviewing
+
+    return {
+        "passed": passed,
+        "rejected": rejected,
+        "pending": pending_total,
+        "passRate": pass_rate,
+        "conflictCases": conflict_cases,
+        "highRiskCases": high_risk,
+        "reviewing": reviewing,
+    }
 
 
 # ---------------------------------------------------------------------------
