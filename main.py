@@ -98,6 +98,62 @@ async def api_get_review_assist(case_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成复核辅助信息失败: {str(e)}")
 
+@app.get("/api/review-assist/statistics")
+async def api_get_review_assist_statistics():
+    """
+    获取复核辅助统计信息
+    使用 _excel_data_cache 直接计算
+    """
+    try:
+        from backend.services.review_focus_service import calculate_priority_score, determine_evidence_status, identify_review_focus
+        
+        total = len(_excel_data_cache)
+        route_stats = {}
+        priority_stats = {"高": 0, "中": 0, "低": 0}
+        focus_stats = {}
+        evidence_stats = {}
+
+        for case_id, case_data in _excel_data_cache.items():
+            # 1. 路由类型统计
+            route_type = case_data.get("system_route", "unknown")
+            route_stats[route_type] = route_stats.get(route_type, 0) + 1
+
+            # 2. 优先级统计
+            try:
+                priority = calculate_priority_score(case_data)
+                level = priority.get("level", "低")
+                priority_stats[level] = priority_stats.get(level, 0) + 1
+            except:
+                priority_stats["低"] = priority_stats.get("低", 0) + 1
+
+            # 3. 复核重点统计
+            try:
+                focus_list = identify_review_focus(case_data)
+                for focus in focus_list:
+                    focus_stats[focus] = focus_stats.get(focus, 0) + 1
+            except:
+                pass
+
+            # 4. 证据状态统计
+            try:
+                evidence_status = determine_evidence_status(case_data)
+                evidence_stats[evidence_status] = evidence_stats.get(evidence_status, 0) + 1
+            except:
+                evidence_stats["证据需核对"] = evidence_stats.get("证据需核对", 0) + 1
+
+        stats = {
+            "total": total,
+            "route_type_stats": route_stats,
+            "priority_stats": priority_stats,
+            "focus_stats": focus_stats,
+            "evidence_status_stats": evidence_stats,
+        }
+        return {"success": True, "data": stats}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
 @app.post("/api/cases/{case_id}/review-assist/generate")
 async def api_generate_review_assist(case_id: str):
     try:
@@ -126,27 +182,6 @@ async def api_batch_generate_review_assist(data: dict):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"批量生成失败: {str(e)}")
-
-@app.get("/api/cases/{case_id}/review-assist")
-async def api_get_review_assist(case_id: str):
-    print(f"[DEBUG] === 路由被调用，case_id={case_id} ===")
-    print(f"[DEBUG] _excel_case_data 长度: {len(_excel_case_data)}")
-    # 打印所有键，找出 CASE-024
-    all_keys = list(_excel_case_data.keys())
-    print(f"[DEBUG] 所有键: {all_keys}")
-    # 查找包含 CASE-024 的键
-    for key in all_keys:
-        if "CASE-024" in key or "CASE-024" in key.upper():
-            print(f"[DEBUG] 找到疑似键: '{key}' (repr: {repr(key)})")
-    try:
-        result = get_review_assist(case_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail=f"案例 {case_id} 不存在")
-        return {"success": True, "data": result.dict()}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取复核辅助信息失败: {str(e)}")
 
 security = HTTPBearer()
 

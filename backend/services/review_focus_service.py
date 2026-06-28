@@ -63,10 +63,8 @@ def identify_review_focus(case_data: dict) -> List[str]:
     if low_conf:
         review_focus.append("低置信度")
     
-    # 6. 规则依据需核对
-    human_decision = _get_str(case_data.get("human_review_decision"))
-    system_suggestion = _get_str(case_data.get("system_liability_suggestion"))
-    if human_decision != system_suggestion or type_conflict == "是":
+    # 6. 规则依据需核对：仅在类型冲突时触发（微调）
+    if type_conflict == "是":
         review_focus.append("规则依据需核对")
     
     # 7. 报告生成验证
@@ -84,7 +82,7 @@ def identify_review_focus(case_data: dict) -> List[str]:
 def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
     """
     计算复核优先级评分（0-100分）
-    优化版本：降低基础分，调整权重，增加快速确认特殊处理
+    微调版本：基础分35，高阈值65，责任敏感+8
     """
     # 提取字段
     type_conflict = _get_str(case_data.get("type_conflict_detected"))
@@ -99,11 +97,10 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
     vehicle_count = case_data.get("estimated_involved_vehicle_count", 0)
     system_route = _get_str(case_data.get("system_route"))
 
-    score = 30  # 基础分从50降到30
+    score = 35  # 基础分从30提高到35
     reasons = []
 
     # ====== 快速确认特殊处理 ======
-    # 如果无冲突、证据完整（≥8）、系统路由为 proceed_to_liability，直接给低分
     if (type_conflict == "否" and 
         isinstance(evidence_score, (int, float)) and evidence_score >= 8 and
         system_route == "proceed_to_liability"):
@@ -126,7 +123,7 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
         score += 20
         reasons.append("模型结论冲突(+20)")
 
-    # 2. 行车记录仪视角：+5（从10降为5）
+    # 2. 行车记录仪视角：+5
     if "行车记录仪" in perspective:
         score += 5
         reasons.append("行车记录仪视角(+5)")
@@ -136,7 +133,7 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
         score += 15
         reasons.append("证据不足(+15)")
 
-    # 4. 责任敏感事故类型：+5（从10降为5）
+    # 4. 责任敏感事故类型：+8（从5提高到8）
     sensitive_types = ["追尾", "变道碰撞", "转弯未让行", "侧向碰撞", "多车事故"]
     yolo_type = _get_str(case_data.get("yolo_candidate_type"))
     qwen_type = _get_str(case_data.get("qwen_candidate_type"))
@@ -147,20 +144,20 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
             is_sensitive = True
             break
     if is_sensitive:
-        score += 5
-        reasons.append("责任敏感(+5)")
+        score += 8
+        reasons.append("责任敏感(+8)")
 
-    # 5. 多车事故：+5（从10降为5，阈值提高到>3）
+    # 5. 多车事故：+5
     if isinstance(vehicle_count, (int, float)) and vehicle_count > 3:
         score += 5
         reasons.append("多车事故(+5)")
 
-    # 6. 低置信度：只看 yolo_conf，且阈值提高到<0.4（不再看 qwen）
+    # 6. 低置信度：阈值<0.4
     if isinstance(yolo_conf, (int, float)) and yolo_conf < 0.4:
         score += 5
         reasons.append("低置信度(+5)")
 
-    # 7. 规则依据需核对：仅在 type_conflict 时加 +5（不再因人工不同而加）
+    # 7. 规则依据需核对：仅在 type_conflict 时加 +5
     if type_conflict == "是":
         score += 5
         reasons.append("规则依据需核对(+5)")
@@ -176,7 +173,7 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
         reasons.append("报告生成失败(+10)")
 
     # ====== 减分项 ======
-    # 1. YOLO与千问一致：-20（从-10变为-20）
+    # 1. YOLO与千问一致：-20
     if type_conflict == "否":
         score -= 20
         reasons.append("YOLO与千问一致(-20)")
@@ -186,12 +183,12 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
         score -= 5
         reasons.append("监控视角(-5)")
 
-    # 3. 报告生成成功：-15（从-5变为-15）
+    # 3. 报告生成成功：-15
     if report_generated == "是":
         score -= 15
         reasons.append("报告生成成功(-15)")
 
-    # 4. 人工复核未修改系统建议：-15（从-5变为-15）
+    # 4. 人工复核未修改系统建议：-15
     if human_decision and system_suggestion and human_decision == system_suggestion:
         score -= 15
         reasons.append("人工未修改系统建议(-15)")
@@ -199,15 +196,15 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
     # 限制范围
     score = max(0, min(100, score))
 
-    # 等级划分（调整阈值）
-    if score >= 75:
+    # 等级划分（高阈值65，中阈值40）
+    if score >= 65:
         level = "高"
-    elif score >= 45:
+    elif score >= 40:
         level = "中"
     else:
         level = "低"
 
-    reason_text = "；".join(reasons) if reasons else "基础分30"
+    reason_text = "；".join(reasons) if reasons else "基础分35"
     return {"score": score, "level": level, "reason": reason_text}
 
 
