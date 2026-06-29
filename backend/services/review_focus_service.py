@@ -173,10 +173,10 @@ def calculate_priority_score(case_data: dict) -> Dict[str, Any]:
         reasons.append("报告生成失败(+10)")
 
     # ====== 减分项 ======
-    # 1. YOLO与千问一致：-20
+    # 1. YOLO与视频语义模型一致：-20
     if type_conflict == "否":
         score -= 20
-        reasons.append("YOLO与千问一致(-20)")
+        reasons.append("YOLO与视频语义模型一致(-20)")
 
     # 2. 监控视角：-5
     if "交通监控" in perspective:
@@ -280,14 +280,14 @@ def generate_conflict_summary(case_data: dict) -> str:
     
     # 若类型冲突
     if type_conflict == "是":
-        return f"YOLO 初步判定为 {yolo_type or 'unknown'}，千问/GPT 判断为 {qwen_type or 'unknown'}，两者在事故类型上存在差异，建议人工核对关键帧和车辆行为。"
+        return f"YOLO 初步判定为 {yolo_type or 'unknown'}，视频语义模型 判断为 {qwen_type or 'unknown'}，两者在事故类型上存在差异，建议人工核对关键帧和车辆行为。"
     
     # 若无冲突但人工结论与系统建议不同
     if human_decision and system_suggestion and human_decision != system_suggestion:
-        return "YOLO 与千问/GPT 判断基本一致，但人工复核结论与系统责任建议存在差异，建议核对规则依据。"
+        return "YOLO 与视频语义模型 判断基本一致，但人工复核结论与系统责任建议存在差异，建议核对规则依据。"
     
     # 若无冲突且一致
-    return "YOLO 与千问/GPT 判断基本一致，建议人工核对规则依据和责任建议。"
+    return "YOLO 与视频语义模型 判断基本一致，建议人工核对规则依据和责任建议。"
 
 
 def determine_evidence_status(case_data: dict) -> str:

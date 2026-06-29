@@ -58,7 +58,7 @@
       </nav>
 
       <div class="drawer-footer">
-        <div class="drawer-version">版本 v1.0.0</div>
+        <div class="drawer-version">版本 v2.0.0</div>
         <div class="drawer-copyright">事故处理平台</div>
       </div>
     </div>

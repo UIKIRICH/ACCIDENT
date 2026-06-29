@@ -192,11 +192,15 @@ const qualityScore = computed(() => safeNum(featureScores.value.quality_score, s
 const relationVisibility = computed(() => 0.6 * alignScore.value + 0.4 * distanceScore.value)
 
 const typeMatchScore = computed(() => {
+  const backendScore = safeNum(analysisResult.value?.rear_end_type_match_score)
+  if (backendScore > 0) return Math.max(0, Math.min(1, backendScore))
   const v = 0.28 * frontRearDamageScore.value + 0.28 * rearFrontDamageScore.value + 0.22 * contactScore.value + 0.22 * longRelScore.value
   return Math.max(0, Math.min(1, v - sidePenalty.value))
 })
 
 const liabilityTrustScore = computed(() => {
+  const backendScore = safeNum(analysisResult.value?.single_image_liability_trust_score)
+  if (backendScore > 0) return Math.max(0, Math.min(1, backendScore))
   let v = 0.30 * qualityScore.value + 0.25 * relationVisibility.value + 0.20 * longRelScore.value + 0.25 * Math.min(frontRearDamageScore.value, rearFrontDamageScore.value)
   if (Number(analysisResult.value?.vehicle_count || 0) < 2) v *= 0.7
   return Math.max(0, Math.min(1, v))

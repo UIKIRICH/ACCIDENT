@@ -80,11 +80,11 @@
           <h3 class="settings-section-title">系统信息</h3>
           <div class="settings-item">
             <div class="settings-item-label">版本号</div>
-            <span class="settings-item-value">v1.0.0</span>
+            <span class="settings-item-value">v2.0.0</span>
           </div>
           <div class="settings-item">
             <div class="settings-item-label">构建时间</div>
-            <span class="settings-item-value">2024-04-19</span>
+            <span class="settings-item-value">2025-07-15</span>
           </div>
         </div>
       </div>

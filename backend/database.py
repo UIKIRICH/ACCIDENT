@@ -960,7 +960,7 @@ def get_stats() -> Dict[str, Any]:
         pending_analysis = db.query(Case).filter(Case.status == "待分析").count()
         pending_review = db.query(Case).filter(Case.status == "待复核").count()
         completed = db.query(Case).filter(Case.status == "已完成").count()
-        pending_tasks = db.query(Task).filter(Task.status == "pending").count()
+        pending_tasks = pending + pending_analysis + pending_review  # 所有待处理类别的案件合计
         active_rules = db.query(Rule).filter(Rule.status == "启用").count()
 
         # Today's new cases
