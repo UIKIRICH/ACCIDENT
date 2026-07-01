@@ -155,6 +155,26 @@
           </transition>
         </form>
 
+        <!-- 游客登录 -->
+        <div class="guest-section">
+          <button
+            type="button"
+            class="guest-btn"
+            :disabled="loading || guestLoading"
+            @click="handleGuestLogin"
+          >
+            <span v-if="!guestLoading" class="guest-btn-text">
+              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"/></svg>
+              游客登录
+            </span>
+            <span v-else class="guest-loader">
+              <span class="loader-dot"></span>
+              <span class="loader-dot"></span>
+              <span class="loader-dot"></span>
+            </span>
+          </button>
+        </div>
+
         <!-- 分隔线 -->
         <div class="divider"><span class="divider-text">其他登录方式</span></div>
 
@@ -197,6 +217,7 @@ const form = reactive({ username: '', password: '', remember: false })
 
 // ── 状态 ──
 const loading = ref(false)
+const guestLoading = ref(false)
 const showPassword = ref(false)
 const activeField = ref('')
 const errors = reactive({ username: '', password: '' })
@@ -269,6 +290,30 @@ const handleLogin = async () => {
 const handleForgotPassword = () => notify({ title: '提示', message: '请联系系统管理员重置密码', type: 'info' })
 const handleSocialLogin = (p) => notify({ title: '提示', message: { wechat: '微信扫码', phone: '短信验证', qrcode: '扫码登录' }[p] + '功能开发中', type: 'info' })
 const handleRegister = () => notify({ title: '提示', message: '请联系系统管理员创建账号', type: 'info' })
+
+// ── 游客登录 ──
+const handleGuestLogin = async () => {
+  guestLoading.value = true
+  try {
+    const result = await AuthAPI.guestLogin()
+    if (result.success && result.data) {
+      localStorage.setItem('auth-token', result.data.token)
+      localStorage.setItem('auth-user', JSON.stringify(result.data.user))
+      window.dispatchEvent(new CustomEvent('auth-change', { detail: { loggedIn: true } }))
+      const ua = navigator.userAgent || ''
+      const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile/i.test(ua)
+        || (window.innerWidth <= 768 && 'ontouchstart' in window)
+      router.push(isMobile ? '/mobile-capture' : '/overview')
+      notify({ title: '游客登录成功', message: '您已进入演示模式，部分功能可能受限', type: 'info' })
+    } else {
+      generalError.value = result.message || '游客登录失败'
+    }
+  } catch (err) {
+    generalError.value = err.message || '网络错误，请检查后端服务是否运行'
+  } finally {
+    guestLoading.value = false
+  }
+}
 
 // 恢复记住的用户名
 ;(() => {
@@ -851,6 +896,68 @@ const handleRegister = () => notify({ title: '提示', message: '请联系系统
 }
 
 /* ============================================================
+   游客登录
+   ============================================================ */
+.guest-section {
+  margin-top: var(--space-3);
+}
+
+.guest-btn {
+  width: 100%;
+  height: 44px;
+  position: relative;
+  border: 1.5px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  overflow: hidden;
+  transition: all var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.guest-btn:hover {
+  border-color: var(--primary-400);
+  color: var(--primary-600);
+  background: var(--primary-50);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="dark"] .guest-btn:hover {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.guest-btn:active { transform: translateY(0); }
+.guest-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.guest-btn-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guest-btn-text svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.7;
+}
+
+.guest-loader {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* ============================================================
    分隔线
    ============================================================ */
 .divider {
@@ -1019,6 +1126,10 @@ const handleRegister = () => notify({ title: '提示', message: '请联系系统
   .submit-btn {
     height: 48px; /* 触摸友好 */
     font-size: 16px;
+  }
+  .guest-btn {
+    height: 48px; /* 触摸友好 */
+    font-size: 15px;
   }
   .social-btn { width: 44px; height: 44px; }
 

@@ -864,6 +864,7 @@ from backend.database import (
     create_analysis_version, get_latest_analysis_version, get_analysis_versions,
     create_structured_fact, get_case_structured_facts,
     get_evidence_consistency_check,
+    create_token,
 )
 
 # ============================================================
@@ -1000,6 +1001,19 @@ async def api_login(data: LoginRequest):
     user = result["user"]
     user.pop("password_hash", None)
     return {"success": True, "data": {"user": user, "token": result["token"]}}
+
+@app.post("/api/auth/guest")
+async def api_guest_login():
+    """游客登录：无需账号密码，直接发放游客令牌"""
+    guest_user = {
+        "id": 0,
+        "username": "guest",
+        "display_name": "游客",
+        "role": "guest",
+        "status": "active",
+    }
+    token = create_token(0, "guest", "游客")
+    return {"success": True, "data": {"user": guest_user, "token": token}}
 
 @app.get("/api/auth/me")
 async def api_me(current_user: dict = Depends(get_current_user)):

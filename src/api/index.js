@@ -227,6 +227,15 @@ export const AuthAPI = {
     return result
   },
 
+  async guestLogin() {
+    const result = await request('POST', '/api/auth/guest')
+    if (result.success && result.data) {
+      setAuthToken(result.data.token)
+      setCurrentUser(result.data.user)
+    }
+    return result
+  },
+
   async getMe() {
     return request('GET', '/api/auth/me')
   },

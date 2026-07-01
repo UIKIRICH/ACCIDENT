@@ -13,8 +13,8 @@
           </svg>
         </div>
         <div class="drawer-user">
-          <div class="drawer-name">张警官</div>
-          <div class="drawer-role">事故处理专员</div>
+          <div class="drawer-name">{{ currentUser?.display_name || currentUser?.username || '用户' }}</div>
+          <div class="drawer-role">{{ roleLabel }}</div>
         </div>
       </div>
 
@@ -216,12 +216,24 @@
 </template>
 
 <script setup>
-import { ref, reactive, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { CasesAPI } from '../api/index.js'
 import { notify } from '../composables/useToast'
 
 const router = useRouter()
+
+// 当前登录用户（支持游客）
+const currentUser = computed(() => {
+  try {
+    return JSON.parse(localStorage.getItem('auth-user') || 'null')
+  } catch { return null }
+})
+const roleLabel = computed(() => {
+  const role = currentUser.value?.role
+  const map = { admin: '管理员', staff: '事故处理专员', guest: '游客模式' }
+  return map[role] || role || '事故处理专员'
+})
 
 const drawerOpen = ref(false)
 const submitting = ref(false)
