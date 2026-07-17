@@ -16,8 +16,7 @@ import hashlib
 import uuid
 import urllib.parse as urllib_parse
 from http.client import IncompleteRead
-import urllib.error as urllib_error
-import urllib.request as urllib_request
+
 from sqlalchemy import text as sa_text
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -688,25 +687,24 @@ def _probe_dify_endpoint(workflow_url: str, timeout_sec: int = 8) -> Dict[str, A
     if not workflow_url:
         result["message"] = "workflow_url is empty"
         return result
-    req = urllib_request.Request(workflow_url, method="GET", headers={"Accept": "application/json, text/plain;q=0.9, */*;q=0.8", "Connection": "close"})
     try:
-        with urllib_request.urlopen(req, timeout=max(3, int(timeout_sec))) as resp:
-            status_code = int(getattr(resp, "status", 200))
-            content_type = str(resp.headers.get("Content-Type", ""))
-            head = (resp.read(256) or b"").decode("utf-8", errors="ignore").lower()
+        resp = requests.get(workflow_url,
+                          headers={"Accept": "application/json, text/plain;q=0.9, */*;q=0.8", "Connection": "close"},
+                          timeout=max(3, int(timeout_sec)))
+        status_code = resp.status_code
+        content_type = resp.headers.get("Content-Type", "")
+        head = (resp.content[:256] or b"").decode("utf-8", errors="ignore").lower()
         looks_like_html = ("text/html" in content_type.lower()) or ("<html" in head) or ("<!doctype html" in head)
-        result.update({"status_code": status_code, "content_type": content_type, "looks_like_html": looks_like_html, "ok": (not looks_like_html), "message": "ok" if not looks_like_html else "endpoint returned HTML page, not Dify API JSON"})
+        if 400 <= status_code < 600:
+            ok = (status_code in {400, 401, 403, 404, 405, 415, 422}) and (not looks_like_html)
+            result.update({"status_code": status_code, "content_type": content_type, "looks_like_html": looks_like_html,
+                          "ok": ok, "message": "reachable_with_http_error" if ok else f"HTTPError {status_code}"})
+            return result
+        result.update({"status_code": status_code, "content_type": content_type, "looks_like_html": looks_like_html,
+                      "ok": (not looks_like_html),
+                      "message": "ok" if not looks_like_html else "endpoint returned HTML page, not Dify API JSON"})
         return result
-    except urllib_error.HTTPError as exc:
-        status_code = int(exc.code or 0)
-        raw = exc.read() or b""
-        content_type = str(exc.headers.get("Content-Type", "")) if exc.headers else ""
-        head = raw[:256].decode("utf-8", errors="ignore").lower()
-        looks_like_html = ("text/html" in content_type.lower()) or ("<html" in head) or ("<!doctype html" in head)
-        ok = (status_code in {400, 401, 403, 404, 405, 415, 422}) and (not looks_like_html)
-        result.update({"status_code": status_code, "content_type": content_type, "looks_like_html": looks_like_html, "ok": ok, "message": "reachable_with_http_error" if ok else f"HTTPError {status_code}"})
-        return result
-    except Exception as exc:
+    except requests.RequestException as exc:
         result["message"] = f"probe_failed: {exc}"
         return result
 
