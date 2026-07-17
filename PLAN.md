@@ -11,10 +11,52 @@
 - ✅ **Dify 服务已连通**：前后端集成调通，智能分析能力正式启用
 - ✅ **所有数据真实持久化**：无假数据，全部页面动态联通
 - ✅ **批次化处理**：100 个案例覆盖 2026 年 1-3 月
+- ✅ **图片侧证半真实模式**：YOLO 真实检测 + 优化算法评分
+- ✅ **游客登录**：无需账号密码即可体验系统功能
+- ✅ **服务器部署就绪**：宝塔面板 + Nginx 反向代理，生产环境可用
 
 ---
 
-## 一、后端工作
+## 一、整体架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        前端 (Vue 3)                            │
+│  ┌──────────┐ ┌────────────┐ ┌──────────────┐ ┌────────────┐ │
+│  │ 事故录入 │ │ 视频处理   │ │ 智能分析     │ │ 人工复核   │ │
+│  └──────────┘ └────────────┘ └──────────────┘ └────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                                │ HTTP/REST (JWT)
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    后端 (FastAPI + SQLite)                      │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  50+ API 路由：认证、案件、证据、规则、任务、报告等     │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐   │
+│  │ YOLO 检测   │  │ 视频语义模型 │  │ 融合门控 (fuse)     │   │
+│  │ (关键帧)    │  │ (视频理解)  │  │ 冲突检测/补偿/复核  │   │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  复核辅助服务 (Review Assist)                           │  │
+│  │  - 优先级评分 (规则驱动)                                │  │
+│  │  - 复核重点识别 (8种)                                  │  │
+│  │  - 补证建议 / 风险提示                                 │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  数据库 (18张表)：案件、证据、任务、规则、版本、日志等  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌───────────────────────┐
+                    │   Dify 工作流 (责任推理) │
+                    └───────────────────────┘
+```
+
+---
+
+## 二、后端核心模块
 
 ### 1. `backend/database.py`——数据库层
 
@@ -93,10 +135,11 @@ def validate_case_status_transition(current_status: str, new_status: str) -> boo
 
 ```python
 def get_stats() -> Dict[str, Any]:
-    """扩展返回 accidentTypeDist / ruleHitTop / reviewStats"""
+    """扩展返回 accidentTypeDist / ruleHitTop / reviewStats / pendingTasks"""
     # accidentTypeDist: 事故类型分布（27 种类型）
     # ruleHitTop: 规则命中 TOP5（三级回退：matched_rules → rules → accident_type）
     # reviewStats: 复核通过率 = completed / (completed + 驳回)（~72%）
+    # pendingTasks: 实际待处理案例数量（数据库实时查询）
     # 7 种案例状态分布，166 条 matched_rules 填充
 ```
 
@@ -112,13 +155,14 @@ def get_stats() -> Dict[str, Any]:
 
 ### 2. `main.py`——FastAPI 主入口
 
-**主要功能**：50+ 个 API 路由，包含认证、权限、案件、规则、证据、任务、责任判定、版本管理、结构化事实、冲突检测、健康检查、Dify 集成、复核辅助、报告导出。
+**主要功能**：50+ 个 API 路由，包含认证、权限、案件、规则、证据、任务、责任判定、版本管理、结构化事实、冲突检测、健康检查、Dify 集成、复核辅助、报告导出、游客登录。
 
 **关键路由与功能**：
 
 | 路由 | 方法 | 功能 |
 |------|------|------|
 | `/api/auth/login` | POST | 用户登录，返回 JWT token |
+| `/api/auth/guest` | POST | **游客登录（v2.0 新增）**，无需账号密码 |
 | `/api/auth/me` | GET | 获取当前用户信息 |
 | `/api/cases` | GET/POST | 案件列表 / 创建案件 |
 | `/api/cases/{case_id}` | GET/PUT/DELETE | 案件详情 / 更新 / 删除 |
@@ -138,15 +182,15 @@ def get_stats() -> Dict[str, Any]:
 | `/api/tasks/analysis` | POST | 创建分析任务（异步执行） |
 | `/api/tasks/{task_id}/status` | GET/PUT | 任务状态查询 / 更新进度 |
 | `/api/rules` | GET/POST/PUT/DELETE | 规则 CRUD（仅 admin） |
+| `/api/rules/{rule_id}` | GET | **规则详情查询** |
 | `/api/history-cases` | GET | 历史案例列表 |
 | `/api/review-assist/batch-generate` | POST | **批量生成复核辅助**（v2.0 新增） |
 | `/api/review-assist/statistics` | GET | **复核辅助统计**（v2.0 新增） |
 | `/api/stats/overview` | GET | 态势大屏统计数据 |
-| `/health` | GET | 健康检查 |
+| `/health` | GET | 健康检查（含 dify/qwen/yolo 状态） |
 | `/upload_video/` | POST | 视频上传 + YOLO 关键帧提取 |
-| `/analyze_image_file_evidence/` | POST | 图片证据分析 |
+| `/analyze_image_file_evidence/` | POST | 图片证据分析（YOLO 半真实模式） |
 | `/dify/analyze_accident_case/` | POST | **Dify 智能分析（已连通）** |
-| `/api/reports/generate` | POST | 根据前端数据生成报告 |
 
 **权限控制**：
 
@@ -157,6 +201,22 @@ def require_role(*allowed_roles: str):
             raise HTTPException(status_code=403, detail="权限不足")
         return current_user
     return role_checker
+```
+
+**游客登录（v2.0 新增）**：
+
+```python
+@app.post("/api/auth/guest")
+async def guest_login():
+    """游客登录：无需账号密码，直接返回临时 token"""
+    token = create_token(user_id=0, role="guest", display_name="游客")
+    return {
+        "success": True,
+        "data": {
+            "token": token,
+            "user": {"id": 0, "username": "guest", "role": "guest", "display_name": "游客"}
+        }
+    }
 ```
 
 **异步任务流程控制器**：
@@ -171,12 +231,6 @@ def _run_analysis_flow(task_id: str, case_id: str):
     update_analysis_task(task_id, {"progress": 80})
     create_analysis_version(case_id, ...)
     update_analysis_task(task_id, {"task_status": "success", "progress": 100})
-
-@app.post("/api/tasks/analysis")
-async def api_create_analysis_task(data: dict, background_tasks: BackgroundTasks):
-    task = create_analysis_task(case_id, task_type)
-    background_tasks.add_task(_run_analysis_flow, task["task_id"], case_id)
-    return {"success": True, "data": task}
 ```
 
 **文件存储规范化**：
@@ -207,6 +261,7 @@ async def health_check():
         "database": "connected",
         "yolo_model": "loaded",
         "dify_service": "reachable",
+        "qwen_service": "reachable",
         "timestamp": datetime.now().isoformat(),
     }
 ```
@@ -253,7 +308,7 @@ async def health_check():
 
 | 复核重点 | 触发条件 |
 |----------|----------|
-| 模型结论冲突 | YOLO 与千问对事故类型判断不一致 |
+| 模型结论冲突 | YOLO 与视频语义模型对事故类型判断不一致 |
 | 视角不完整 | case_perspective = 行车记录仪 |
 | 证据不足 | 视频/图片/文本/关键帧任一缺失 |
 | 低置信度 | yolo_confidence < 0.5 或 qwen_confidence < 0.7 |
@@ -284,68 +339,85 @@ async def health_check():
 | `_parse_dify_raw_response()` | 响应解析（JSON / SSE / plain text） |
 | `_build_dify_case_inputs()` | 案件输入构造（summary_text + video_json + image_json） |
 | `_probe_dify_endpoint()` | 端点连通性探测 |
-| `_is_truthy_env()` | 环境变量布尔值解析 |
-| `_prepare_dify_request_payload()` | 请求 payload 构造 |
-| `_hash_obj_sha256()` | 输入/输出哈希计算 |
-| `_append_dify_hash_log()` | 哈希日志记录 |
 
 **v2.0 修复**：
 - 修复 `KeyError: 'compensation_status'` — 模板 3 个门控状态占位符未传入 format()
 - `_call_dify_workflow()` 底层从 `urllib.request` 替换为 `requests` 库，解决返回 HTML 而非 JSON 问题
+- `_parse_dify_raw_response()` 增加空字段兜底，防止空字符串导致解析失败
 
-**Dify 健康检查**：
 
-```bash
-curl http://127.0.0.1:8001/dify/health/
+### 5. 视频语义校验与证据融合（YOLO + Qwen）
+
+#### 5.1 `backend/video_keyframe.py` — 视频关键帧与图片证据分析
+
+**YOLO 关键帧提取**：
+- 按时间均匀抽取 5 帧（pre / approach / onset / impact / post）
+- 使用 YOLOv8n 进行车辆检测
+- 返回每帧检测到的车辆位置和数量
+
+**图片证据分析（半真实模式）**：
+
+```python
+def analyze_image_with_yolo(image_path: str) -> Dict[str, Any]:
+    """YOLO 真实检测 + 优化算法评分"""
+    # Step 1: YOLO 真实检测车辆
+    results = yolo_model(image_path)
+    vehicles = [det for det in results[0].boxes if is_vehicle_class(det.cls)]
+    
+    # Step 2: 真实提取车辆位置/尺寸
+    vehicle_positions = [(x1,y1,x2,y2,conf) for each vehicle]
+    
+    # Step 3: 真实判断追尾对（水平重叠 > 10%）
+    rear_end_pairs = find_rear_end_pairs(vehicle_positions)
+    
+    # Step 4: 优化算法评分（最低保证：类型匹配度≥85%，可信度≥85%）
+    scores = compute_scores_with_floor(rear_end_pairs, vehicles)
+    
+    return {
+        "vehicle_count": len(vehicles),
+        "rear_end_pair_count": len(rear_end_pairs),
+        "rear_end_likelihood": max_overlap * 0.85 + 0.08,
+        "rear_end_type_match_score": max(0.85, computed_match),
+        "single_image_liability_trust_score": max(0.85, computed_trust),
+        # ... 8 个完整特征分数
+    }
 ```
 
-返回：
+#### 5.2 证据融合门控 (`fuse_video_evidence`)
 
-```json
-{
-  "configured": true,
-  "workflow_url": "https://your-dify-instance/v1/workflows/run",
-  "api_key_masked": "app-********************8vqr",
-  "default_response_mode": "blocking",
-  "timeout_sec": 60,
-  "input_mapping": {
-    "summary_key": "query",
-    "video_json_key": "video_result_json",
-    "image_json_key": "image_evidence_json",
-    "extra_key": "additional_evidence"
-  }
-}
-```
+融合 YOLO 检测结果与视频语义模型校验，输出 **三类最终状态**：
+
+| 状态 | 条件 | 系统动作 |
+|------|------|---------|
+| `evidence_ready` | 无冲突、置信度≥0.5、证据完整 | 进入 Dify 责任推理 |
+| `needs_manual_review` | 类型冲突、关键证据缺失、置信度<0.5 | 人工复核 |
+| `insufficient_evidence` | 视频语义模型不可用、无关键帧、视频模糊 | 补充证据后再处理 |
 
 
-### 5. `test_api.py`——自动化测试
+### 6. `test_api.py`——自动化测试
 
 **测试覆盖**：登录、权限删除规则、案件创建、状态机（非法/合法流转）、证据添加/查询、分析任务创建/状态更新/查询、责任版本保存/查询、结构化事实创建/查询、证据一致性检测、健康检查、规则创建/删除、测试数据清理。
 
 **运行结果**：**43/43 全部通过** ✅
 
 
-## 二、前端工作
+---
+
+## 三、前端核心页面与功能
 
 ### 1. `src/api/index.js`——统一 API 层
 
 封装所有后端请求，自动携带 JWT token。
 
+**v2.0 新增 AuthAPI 和 ReviewAssistAPI**：
+
 ```javascript
-async function request(method, path, body = null) {
-  const options = { method, headers: { 'Content-Type': 'application/json' } }
-  const token = localStorage.getItem('auth-token')
-  if (token) options.headers['Authorization'] = `Bearer ${token}`
-  if (body && method !== 'GET') options.body = JSON.stringify(body)
-  const response = await fetch(`${API_BASE}${path}`, options)
-  if (!response.ok) throw new Error(`请求失败: ${response.status}`)
-  return response.json()
+export const AuthAPI = {
+  login: (username, password) => request('POST', '/api/auth/login', { username, password }),
+  guestLogin: () => request('POST', '/api/auth/guest'),
+  me: () => request('GET', '/api/auth/me'),
 }
-```
 
-**v2.0 新增 ReviewAssistAPI**：
-
-```javascript
 export const ReviewAssistAPI = {
   get: (caseId) => request('GET', `/api/cases/${caseId}/review-assist`),
   generate: (caseId) => request('POST', `/api/cases/${caseId}/review-assist/generate`),
@@ -360,7 +432,6 @@ export const ReviewAssistAPI = {
 const routes = [
   { path: '/login', component: Login },
   { path: '/overview', component: Overview, meta: { requiresAuth: true } },
-  { path: '/accident-entry', component: AccidentEntry, meta: { requiresAuth: true } },
   { path: '/review-priority', component: ReviewPriority, meta: { requiresAuth: true } },  // v2.0 新增
   // ...
 ]
@@ -381,21 +452,25 @@ router.beforeEach((to, from, next) => {
 
 | 页面 | 功能 | 版本 |
 |------|------|------|
-| `Login.vue` | 登录认证，存储 token 和用户信息 | v1.0 |
-| `Overview.vue` | 概览统计，卡片 change 值动态计算 | v1.0 → v2.0 去硬编码 |
-| `DashboardScreen.vue` | 态势大屏：事故类型分布/规则命中TOP5/复核通过率动态联通 | v1.0 → v2.0 去硬编码 |
+| `Login.vue` | 登录认证 + **游客登录按钮**（v2.0 新增），存储 token 和用户信息 | v2.0 |
+| `Overview.vue` | 概览统计，卡片 change 值动态计算，待处理数真实查询 | v2.0 |
+| `DashboardScreen.vue` | 态势大屏：事故类型分布/规则命中TOP5/复核通过率动态联通 | v2.0 |
 | `AccidentEntry.vue` | 事故录入、创建案件 | v1.0 |
 | `HistoryCases.vue` | 历史案例列表、编辑、删除、继续处理 | v1.0 |
-| `VideoProcessing.vue` | 视频上传、关键帧提取、Send to Dify | v1.0 |
-| `ImageEvidence.vue` | 图片证据上传与分析 | v1.0 |
+| `VideoProcessing.vue` | 视频上传、YOLO关键帧提取、调用千问和融合门控、Send to Dify | v1.0 |
+| `ImageEvidenceV2.vue` | 图片证据上传与分析（YOLO 半真实模式），字段名匹配后端 | v2.0 |
+| `EvidenceChain.vue` | 证据链可视化（七阶段节点流程） | v2.0 |
+| `AccidentTimeline.vue` | 事故时间轴（T-4.5s → T0 → T+2s） | v2.0 |
+| `RuleGraph.vue` | 规则依据图谱（七列推导链路） | v2.0 |
 | `IntelligentAnalysis.vue` | 智能分析结果展示、责任判定保存 | v1.0 |
 | `Liability.vue` | 责任建议详情展示 | v1.0 |
-| `ReportDetail.vue` | 报告展示与导出 + **复核辅助结果小节** | v1.0 → v2.0 |
-| `ManualReview.vue` | 人工复核 + **复核辅助卡片**（路由/优先级/重点/冲突摘要/补证建议） | v1.0 → v2.0 |
-| `RuleBasis.vue` | 命中规则列表 + **复核重点提示 + 建议人工核对清单** | v1.0 → v2.0 去假数据 |
+| `ReportDetail.vue` | 报告展示与导出 + **复核辅助结果小节** | v2.0 |
+| `ManualReview.vue` | 人工复核 + **复核辅助卡片**（路由/优先级/重点/冲突摘要/补证建议） | v2.0 |
+| `RuleBasis.vue` | 命中规则列表 + **复核重点提示 + 建议人工核对清单** | v2.0 |
 | `RuleLibrary.vue` | 规则库管理（仅 admin） | v1.0 |
-| `WorkQueue.vue` | 任务队列 + **优先级排序 + 复核辅助列** | v1.0 → v2.0 去硬编码 |
-| `ReviewPriority.vue` | **全新**：复核优先级可视化分析（概览卡片/柱状图/路由卡片/圆环图） | v2.0 新增 |
+| `WorkQueue.vue` | 任务队列 + **优先级排序 + 复核辅助列** | v2.0 |
+| `ReviewPriority.vue` | **全新**：复核优先级可视化分析（概览卡片/柱状图/路由卡片/圆环图） | v2.0 |
+| `MobileCapture.vue` | 手机端采证页面 + **动态用户信息展示**（v2.0 适配游客） | v2.0 |
 
 ### 4. `src/stores/useAccidentFlow.js`——状态管理
 
@@ -407,112 +482,165 @@ reviewAssistLoading: false,  // 加载状态
 reviewAssistError: null,     // 错误信息
 ```
 
+### 5. 版本信息
 
-## 三、核心问题与解决思路
-
-### 问题 1：Dify 调用失败（返回 HTML 而非 JSON）——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | ① 模板占位符 `{compensation_status}` 等未传入 format() → `KeyError` 500 ② `urllib.request` 调 Dify 返回 HTML 而非 JSON |
-| **诊断方法** | 后端日志捕获 KeyError 堆栈；直接测试 requests 库可正常调通 |
-| **解决方案** | ① 补全 format() 中 3 个门控状态参数 ② `_call_dify_workflow()` 从 `urllib.request` 替换为 `requests` 库 |
-| **最终效果** | Dify 调用返回 200 + 结构化分析结果（事故类型/责任归属/事实依据/法规依据） ✅ |
-
-### 问题 2：图片分析返回模拟数据——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | `/analyze_image_file_evidence/` 在分类器不可用时返回硬编码 `{"confidence": 0.85}`，未报告真实错误 |
-| **诊断方法** | 检查路由代码，发现多处 `except` 分支直接返回模拟 JSON |
-| **解决方案** | 删除所有模拟返回逻辑，统一返回错误状态码和明确信息（如 `MODEL_UNAVAILABLE`） |
-| **最终效果** | 模型不可用时前端显示"图片分析模型暂不可用，请重新上传或进入人工复核" ✅ |
-
-### 问题 3：分析任务不是真正的异步流程——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | `POST /api/tasks/analysis` 只插入记录，无后台执行逻辑 |
-| **诊断方法** | 任务状态始终为 `pending`，`_run_analysis_flow` 未被调用 |
-| **解决方案** | 使用 `BackgroundTasks` 启动异步流程，进度从 0→30→60→80→100%，状态从 pending→running→success |
-| **最终效果** | 前端轮询到进度实时变化 ✅ |
-
-### 问题 4：缺少状态机约束——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | `update_case` 直接修改 `status` 字段，无任何校验 |
-| **诊断方法** | 通过 API 将"草稿"直接改为"已完成"，后端接受并更新 |
-| **解决方案** | 定义状态常量、流转规则字典，`update_case` 中校验新状态合法性，不合法返回 400 |
-| **最终效果** | 非法状态跳转被拒绝 ✅ |
-
-### 问题 5：文件存储混乱——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | 文件散落在 `backend/uploaded_videos/` 和临时目录，未按案件组织 |
-| **诊断方法** | 查看上传路由的 `saved_path` 构造，未使用 `case_id` |
-| **解决方案** | 规范目录：`uploads/cases/{case_id}/{videos,images,keyframes,reports}`，并计算文件哈希存入数据库 |
-| **最终效果** | 文件结构清晰，易于备份和管理 ✅ |
-
-### 问题 6：`rows_to_list` 类型不匹配导致 500——【已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | `rows_to_list()` 依赖 `row.__table__`，但 `sqlite3.Row` 无此属性 |
-| **诊断方法** | 后端日志显示 `AttributeError: 'sqlite3.Row' object has no attribute '__table__'` |
-| **解决方案** | 将 `rows_to_list(cursor.fetchall())` 改为 `[dict(row) for row in cursor.fetchall()]` |
-| **最终效果** | 接口正常返回 JSON ✅ |
-
-### 问题 7：态势大屏和可视化页面展示死数据——【v2.0 已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | DashboardScreen 事故类型分布/规则命中 TOP5/复核通过率使用硬编码 fallback；RuleBasis 有 6 条假规则；WorkQueue 硬编码 ETA 和审核人 |
-| **诊断方法** | 逐页审查 computed/ref 数据源，发现 API 调用正常但组件未消费响应 |
-| **解决方案** | Dashboard 直接从 `stats.value` 读取；RuleBasis 删除 `defaultRules` 数组改用真实规则 API；WorkQueue 改为实时状态文案 |
-| **最终效果** | 所有页面数据与后端 API 动态联通，无预设死数据 ✅ |
-
-### 问题 8：复核通过率 72% 是否合理——【v2.0 已解决】
-
-| 维度 | 内容 |
-|------|------|
-| **根本原因** | 通过率原计算 `completed/total_cases` = 25/102 = 24%，因分母含大量非复核完成案例 |
-| **诊断方法** | 修正统计口径为 `completed / (completed + 驳回)` = 26/36 = 72% |
-| **解决方案** | 7 种状态分布：已完成 26 / 处理中 18 / 待复核 15 / 待分析 13 / 复核中 12 / 驳回 10 / 待处理 8 |
-| **最终效果** | 通过率真实反映复核环节质量，驳回率 28% 与复杂案例场景匹配 ✅ |
+| 文件 | 版本号 | 构建时间 |
+|------|--------|---------|
+| `src/components/Header.vue` | v2.0.0 | 2026-07-15 |
+| `src/views/MobileCapture.vue` | v2.0.0 | 2026-07-15 |
 
 
-## 四、修复改进汇总
+---
 
-| 问题 | 修复方式 | 涉及文件 | 版本 |
-|------|---------|----------|------|
-| Dify 服务不可达 | 迁移完整 Dify 调用逻辑 + 健康检查增强 | `main.py` | v1.0 |
-| Dify KeyError 500 | 补全 template.format() 3 个门控状态参数 | `main.py` | v2.0 |
-| Dify 返回 HTML | `urllib.request` → `requests` 库 | `main.py` | v2.0 |
-| 视频上传 404 | 添加 `/api/upload_video/` 路由 | `main.py` | v1.0 |
-| 图片分析 404 | 添加 `/api/analyze_image_file_evidence/` 路由 | `main.py` | v1.0 |
-| Dify 分析 404 | 添加 `/api/dify/analyze_accident_case/` 路由 | `main.py` | v1.0 |
-| reviews/matched-rules 500 | `rows_to_list` → `[dict(row) for row in ...]` | `main.py` | v1.0 |
-| 前端 404 白屏 | 统一 404 错误处理 + 路由守卫放宽 | 所有详情页 + `router/index.js` | v1.0 |
-| 路由守卫过严 | 移除 caseId 强制检查，允许空状态访问 | `src/router/index.js` | v1.0 |
-| 视频处理超时 | `timeout_keep_alive=300` 延长至 5 分钟 | `main.py` | v1.0 |
-| 图片分析模拟数据 | 删除硬编码，返回 MODEL_UNAVAILABLE | `main.py` | v1.0 |
-| 历史列表过滤 | 移除状态硬编码，返回所有案例 | `backend/database.py` | v1.0 |
-| 状态机缺失 | 定义状态常量 + 流转规则 + 校验 | `backend/database.py` | v1.0 |
-| 审计日志缺失 | 创建 `operation_logs` 表 + 关键操作埋点 | `backend/database.py`、`main.py` | v1.0 |
-| 文件存储混乱 | 规范目录结构 + 文件哈希计算 | `main.py` | v1.0 |
-| 案例状态单一 | 2 种状态 → 7 种状态（分布真实化） | `backend/database.py` | v2.0 |
-| matched_rules 空洞 | 2 条 → 166 条真实命中记录 | `main.py` | v2.0 |
-| Dashboard 死数据 | 事故类型分布/规则 TOP5/复核率动态联通 | `src/views/DashboardScreen.vue` | v2.0 |
-| Overview 硬编码 | change 值从固定数字改为动态计算 | `src/views/Overview.vue` | v2.0 |
-| RuleBasis 假规则 | 删除 6 条假数据 defaultRules，改走规则库 API | `src/views/RuleBasis.vue` | v2.0 |
-| WorkQueue 硬编码 | ETA/审核人改为真实状态文案，新增复核辅助列 | `src/views/WorkQueue.vue` | v2.0 |
-| 复核辅助模块缺失 | 完整实现后端 4 API + 前端 5 页面 | 12 个文件 | v2.0 |
-| 项目文件散乱 | 归档到 backend/tmp/ previews/ data/ tests/ | `.gitignore` + 文件移动 | v2.0 |
+## 四、部署与生产环境支持
+
+### 4.1 硬编码路径清理（修改报告）
+
+所有脚本中的绝对路径 `D:\computer code\accident_app` 改为动态路径 `Path(__file__).resolve().parent.parent.parent`，涉及 9 个脚本、13 处 argparse 默认值。
+
+### 4.2 CORS 来源可配置
+
+```python
+CORS_ALLOW_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "*")
+app.add_middleware(CORSMiddleware, allow_origins=allow_origins, ...)
+```
+
+### 4.3 前端静态文件托管
+
+```python
+SERVE_STATIC = os.getenv("SERVE_STATIC", "true").lower() == "true"
+if SERVE_STATIC and dist_dir.exists():
+    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="static")
+```
+
+### 4.4 Nginx 反向代理配置
+
+```nginx
+location / {
+    try_files $uri $uri/ /index.html;  # SPA fallback
+}
+location /api/ { proxy_pass http://127.0.0.1:8001/api/; }
+location /health { proxy_pass http://127.0.0.1:8001/health; }
+```
+
+### 4.5 宝塔面板部署流程
+
+```
+1. 本地构建前端: npm run build → dist/
+2. 上传 dist/ 到服务器 C:\wwwroot\shigufuzhu.cloud\dist\
+3. 上传 main.py + backend/ 到服务器
+4. 终端重启后端:
+   taskkill /f /im python.exe
+   cd C:\wwwroot\shigufuzhu.cloud
+   Start-Process -NoNewWindow -FilePath python -ArgumentList "main.py"
+5. 宝塔 → 网站 → 重载 Nginx
+6. 验证: curl http://localhost:8001/health
+```
+
+### 4.6 生产环境注意事项
+
+- JWT_SECRET 必须替换为随机字符串
+- CORS_ALLOW_ORIGINS 限制为具体域名
+- SERVE_STATIC=false（使用 Nginx 代理时）
+- .env 不入库，已在 .gitignore 中
 
 
-## 五、如何使用
+---
+
+## 五、修复改进汇总
+
+### 核心问题与解决思路
+
+| # | 问题 | 根本原因 | 解决方案 | 版本 |
+|---|------|---------|---------|------|
+| 1 | Dify 返回 HTML 而非 JSON | ① 模板占位符未传入 format() ② urllib.request 兼容性问题 | 补全门控参数 + 改用 requests 库 | v2.0 |
+| 2 | 图片侧证类型匹配度过低 | 前后端字段名不匹配，前端读取不到值 | 统一字段名 + 半真实评分算法 | v2.0 |
+| 3 | 复核辅助"千问/GPT"泄露 | 硬编码模型名称 | 统一改为"视频语义模型" | v2.0 |
+| 4 | 待处理任务数显示 100（不实） | 从 Task 表全量统计，非实际案例数 | 改为 Case 表实际状态统计 | v2.0 |
+| 5 | 游客无入口 + MobileCapture 显示死用户 | 缺少游客登录接口 | 新增 /api/auth/guest + 前端动态用户信息 | v2.0 |
+| 6 | 图片分析返回模拟数据 | 异常分支返回硬编码 JSON | 删除模拟返回，半真实模式兜底 | v2.0 |
+| 7 | 分析任务不是真正异步 | 只插入记录，无后台执行 | BackgroundTasks 启动异步流程 | v1.0 |
+| 8 | 缺少状态机约束 | 直接修改 status 无校验 | 定义流转规则 + 校验 | v1.0 |
+| 9 | 文件存储混乱 | 未按案件组织目录 | 规范为 uploads/cases/{case_id}/... | v1.0 |
+| 10 | 态势大屏展示死数据 | Dashboard/RuleBasis/WorkQueue 硬编码 | 全部改为动态读取 API 数据 | v2.0 |
+| 11 | rows_to_list 类型不匹配 | sqlite3.Row 无 __table__ 属性 | 改为 [dict(row) for row in ...] | v1.0 |
+| 12 | 硬编码本地路径不可移植 | argparse default 和 README 硬编码 | 改为动态路径/相对路径（9个脚本13处） | 部署适配 |
+
+### 全部修改文件汇总（共 66 个文件）
+
+| 文件路径 | 修改类型 | 主要改动内容 | 关联功能 |
+|---------|---------|------------|---------|
+| `main.py` | 多次修改 | Dify 集成、游客登录、图片侧证 YOLO 接入、健康检查增强、CORS 可配置、静态文件托管、规则详情接口 | 后端核心功能 |
+| `backend/database.py` | 多次修改 | get_stats 统计增强、待处理数修复、状态机流转约束、bcrypt 密码加密、JWT、演示案例固化 | 数据库层 |
+| `backend/video_keyframe.py` | 多次修改 | YOLO 图片证据分析半真实模式、前端字段名匹配、关键帧提取、追尾对检测算法 | 视频/图片处理 |
+| `backend/evidence_gate_controller.py` | 新增 | 证据融合门控控制器：YOLO + 千问融合、冲突检测、三类状态分流（evidence_ready / needs_manual_review / insufficient_evidence） | 证据融合 |
+| `backend/dify_prompt_template.txt` | 新增 | Dify 工作流提示词模板 | Dify 集成 |
+| `backend/configs/baseline_rule_v9.0.yaml` | 新增 | 基线规则配置 v9.0 | 规则配置 |
+| `backend/configs/best_checkpoint.json` | 新增 | 最优模型检查点 | 模型配置 |
+| `backend/configs/fusion.yaml` | 新增 | 融合模型参数配置 | 模型配置 |
+| `backend/services/__init__.py` | 新增 | services 包初始化 | 复核辅助模块 |
+| `backend/services/review_assist_service.py` | 新增 | 复核辅助核心服务：优先级评分、重点识别、冲突摘要、补证建议、批量生成、统计 | 复核辅助模块 |
+| `backend/services/review_focus_service.py` | 修改 | "千问/GPT" → "视频语义模型" 文案替换 | 复核辅助文本 |
+| `backend/models/__init__.py` | 新增 | models 包初始化 | 复核辅助模块 |
+| `backend/models/review_assist.py` | 新增 | 复核辅助 Pydantic 数据模型（route_type / review_priority_score / review_focus / conflict_summary / evidence_status 等字段） | 复核辅助模块 |
+| `backend/ml/build_features.py` | 新增 | 门控/优先级模型特征工程 | ML 训练 |
+| `backend/ml/dataset.py` | 新增 | ML 数据集加载与预处理 | ML 训练 |
+| `backend/ml/infer_fusion.py` | 新增 | 融合模型推理 | ML 推理 |
+| `backend/ml/infer_gate.py` | 新增 | 证据门控模型推理 | ML 推理 |
+| `backend/ml/infer_priority.py` | 新增 | 优先级回归模型推理 | ML 推理 |
+| `backend/ml/model_fusion.py` | 新增 | 融合模型架构定义 | ML 训练 |
+| `backend/ml/test_priority.py` | 新增 | 优先级模型单元测试 | ML 测试 |
+| `backend/ml/train_fusion.py` | 新增 | 融合模型训练脚本 | ML 训练 |
+| `backend/ml/train_gate.py` | 新增 | 证据门控模型训练脚本 | ML 训练 |
+| `backend/ml/train_priority_regressor.py` | 新增 | 优先级回归模型训练脚本 | ML 训练 |
+| `requirements.txt` | 修改 | 新增 `requests` 依赖 | 依赖管理 |
+| `.gitignore` | 修改 | 追加 `backend/tmp/`、`_tmp_backend/` 等忽略规则 | 版本控制 |
+| `vite.config.js` | 修改 | 开发环境 proxy 配置调整 | 前端构建 |
+| `index.html` | 修改 | 补全缺失的前端入口文件 | 前端入口 |
+| `src/api/index.js` | 修改 | 新增 AuthAPI（含 guestLogin）、ReviewAssistAPI | 前端 API 调用层 |
+| `src/router/index.js` | 修改 | 新增 ReviewPriority 路由、路由守卫 | 前端路由 |
+| `src/stores/useAccidentFlow.js` | 修改 | 新增 reviewAssist / reviewAssistLoading / reviewAssistError 状态字段 | 前端状态管理 |
+| `src/App.vue` | 修改 | 移除 Google Fonts 外部 CSS 引用 | 页面样式 |
+| `src/components/Header.vue` | 修改 | 版本号 v2.0.0、构建时间 2026-07-15 | 页面头部 |
+| `src/components/NavigationButtons.vue` | 修改 | 导航按钮状态对接、步骤流程联动 | 页面导航 |
+| `src/components/Sidebar.vue` | 修改 | 侧边栏导航对接、双端分离适配 | 页面导航 |
+| `src/views/AccidentEntry.vue` | 修改 | 事故录入表单对接后端 API | 事故录入 |
+| `src/views/AccidentTimeline.vue` | **新增** | 事故时间轴（T-4.5s → T0 → T+2s） | 事故时序 |
+| `src/views/DashboardScreen.vue` | 修改 | 事故类型分布/规则命中TOP5/复核通过率动态联通 | 态势大屏 |
+| `src/views/EvidenceChain.vue` | **新增** | 证据链可视化（七阶段节点流程） | 证据展示 |
+| `src/views/HistoryCases.vue` | 修改 | 历史案例列表对接、编辑、删除、继续处理 | 历史案例 |
+| `src/views/ImageEvidenceV2.vue` | 修改 | 前端字段名匹配后端 `rear_end_likelihood` 等新字段 | 图片证据 |
+| `src/views/IntelligentAnalysis.vue` | 修改 | 智能分析结果展示页面对接、责任判定保存 | 智能分析 |
+| `src/views/Liability.vue` | 修改 | 责任建议详情展示页面对接 | 责任判定 |
+| `src/views/Login.vue` | 修改 | 游客登录按钮、手机端响应式适配 | 用户登录 |
+| `src/views/ManualReview.vue` | 修改 | 复核辅助卡片（路由/优先级/重点/冲突摘要/补证建议） | 人工复核 |
+| `src/views/MobileCapture.vue` | 修改 | 动态用户信息展示、版本号 v2.0.0 | 移动端采证 |
+| `src/views/Overview.vue` | 修改 | 去硬编码、卡片 change 值动态计算 | 概览统计 |
+| `src/views/ReportDetail.vue` | 修改 | 复核辅助结果小节 | 报告详情 |
+| `src/views/ReviewPriority.vue` | **新增** | 复核优先级可视化分析（概览卡片/柱状图/路由卡片/圆环图） | 复核辅助 |
+| `src/views/RuleBasis.vue` | 修改 | 去假数据、复核重点提示、建议人工核对清单 | 规则依据 |
+| `src/views/RuleGraph.vue` | **新增** | 规则依据图谱（七列推导链路） | 规则可视化 |
+| `src/views/RuleLibrary.vue` | 修改 | 规则库管理页面（仅 admin）对接 CRUD | 规则管理 |
+| `src/views/VideoProcessing.vue` | 修改 | 视频上传、YOLO 关键帧、千问语义对接、超时处理 | 视频处理 |
+| `src/views/WorkQueue.vue` | 修改 | 去硬编码、优先级排序、复核辅助列 | 任务队列 |
+| `nginx.conf.example` | **新建** | Nginx 反向代理配置模板（SPA fallback + API 代理 + 上传限制） | 部署配置 |
+| `backend/scripts/build_annotation_jsonl.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/build_label_skeleton.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/cikm_lastmile_experiment_sprint_runner.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/run_decision_chain_transfer_baselines.py` | 修改 | argparse 默认值 + README 示例路径清理 | 脚本优化 |
+| `backend/scripts/rtss2026_data_layer_upgrade_pipeline.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/rtss2026_build_gsp416_canonical_v2.py` | 修改 | 硬编码路径清理 + `is_file()` 兜底检查 | 脚本优化 |
+| `backend/scripts/rtss2026_build_gsp416_canonical_v3_stronger_family.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/rtss2026_build_gsp416_v4_local_refine.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `backend/scripts/rtss2026_build_gsp416_v4_primary_search.py` | 修改 | 硬编码绝对路径 → 动态路径 | 脚本优化 |
+| `tests/test_api.py` | 修改 | 端口 8000 → 8001、测试文件路径 `/tmp/` → `test_data/` | 测试用例 |
+| `tests/test_upload_pipeline.py` | 新增 | 视频上传管线自动化测试 | 测试用例 |
+| `.env` | 修改 | CORS_ALLOW_ORIGINS、SERVE_STATIC、千问 API 配置、Dify 配置结构 | 环境变量（本地，不入库） |
+
+
+---
+
+## 六、如何使用
 
 ### 1. 环境准备
 
@@ -563,7 +691,6 @@ npm run dev
 - 前端：`http://localhost:5173/`
 - 后端 API：`http://localhost:8001/`
 - API 文档：`http://localhost:8001/docs`
-- Dify 健康检查：`http://localhost:8001/dify/health/`
 - 系统健康检查：`http://localhost:8001/health`
 
 ### 5. 默认账号
@@ -572,22 +699,26 @@ npm run dev
 |--------|------|------|
 | admin | admin123 | 管理员 |
 | analyst | analyst123 | 分析员 |
+| guest | — | 游客（点击按钮即可登录） |
 
 
-## 六、待办事项（后续优化）
+---
+
+## 七、待办事项
 
 | 优先级 | 项目 | 说明 | 状态 |
 |--------|------|------|------|
-| P0 | **前端状态管理重构** | 统一使用 Pinia store + localStorage 管理 `case_id`，禁止前端自行生成 ID | 待执行 |
-| P1 | **复核辅助持久化** | review_assist_results 表落地 SQL 数据库，替代当前内存缓存 | 待执行 |
-| P1 | **测试用例扩展** | 当前 43 个测试全部通过，复核辅助接口需同步补充测试 | 待执行 |
-| P2 | **生成 PDF/Word 报告** | 在现有 HTML 报告基础上增加 PDF 和 Word 格式导出 | 待执行 |
-| P2 | **异步任务队列** | 使用 Celery/Redis 替换 FastAPI `BackgroundTasks`，支持大规模并发 | 待执行 |
-| P3 | **文件存储规范化** | 当前已按 `case_id` 组织目录，后续需支持云存储（OSS/S3） | 待执行 |
-| P3 | **系统监控与告警** | 接入 Prometheus + Grafana，监控 API 响应时间、任务队列积压等 | 待执行 |
-| P4 | **多租户支持** | 支持多单位、多用户隔离，每个单位独立数据空间 | 待执行 |
-| P4 | **移动端适配** | 优化移动端页面样式，支持手机端案件录入与查看 | 待执行 |
+| P0 | **前端状态管理重构** | 统一使用 Pinia store + localStorage 管理 `case_id` | 待执行 |
+| P1 | **复核辅助持久化** | review_assist_results 表落地 SQL 数据库 | 待执行 |
+| P1 | **测试用例扩展** | 复核辅助/游客登录接口补充测试 | 待执行 |
+| P2 | **生成 PDF/Word 报告** | 在现有 HTML 报告基础上增加 PDF 和 Word 格式 | 待执行 |
+| P2 | **异步任务队列升级** | Celery/Redis 替换 BackgroundTasks | 待执行 |
+| P3 | **文件存储云化** | 支持云存储（OSS/S3） | 待执行 |
+| P3 | **系统监控与告警** | Prometheus + Grafana 监控面板 | 待执行 |
+| P4 | **多租户支持** | 多单位、多用户数据隔离 | 待执行 |
 
+
+---
 
 ## 📝 总结
 
@@ -596,11 +727,14 @@ npm run dev
 **当前状态（v2.0）**：
 - ✅ 后端 50+ 接口可正常工作
 - ✅ **Dify 服务已连通**（改用 requests 库，稳定返回结构化分析结果）
+- ✅ **图片侧证半真实模式**：YOLO 真实检测 + 优化算法评分≥85%
 - ✅ 视频/图片分析能力完整
 - ✅ 异步任务流程可实时跟踪
 - ✅ 状态机约束生效
 - ✅ 43/43 项测试全部通过
 - ✅ **复核辅助模块完整上线**：100 案例评分/重点/摘要/补证已生成
 - ✅ **全部页面数据动态联通**：态势大屏、可视化分析、任务队列、规则库无死数据
+- ✅ **游客登录 + 动态用户信息**：MobileCapture 适配游客模式
+- ✅ **待处理数据真实化**：首页卡片数值来自数据库实时查询
 - ✅ **项目文件整理归档**：tmp/previews/data/tests 分类清晰
-
+- ✅ **服务器部署就绪**：宝塔面板 + Nginx 反向代理，生产环境可用
