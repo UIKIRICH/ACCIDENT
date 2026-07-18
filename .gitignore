@@ -21,3 +21,8 @@ backend/keyframes/
 yolov8n.pt
 outputs/
 backend/tmp/
+
+# 临时测试产物
+backend_test.log
+frontend_test.log
+tests/backend/
