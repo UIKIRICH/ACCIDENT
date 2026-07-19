@@ -324,20 +324,8 @@ def init_db():
                 ))
         db.commit()
 
-        # ---- 默认规则（完整 7 条） ----
-        if db.query(Rule).count() == 0:
-            default_rules = [
-                ("R-001", "后车未保持安全距离", "追尾事故", "同向行驶", "后车与前车的距离不足安全距离（至少3秒车距），造成追尾事故，后车负全部责任。"),
-                ("R-002", "变道未打转向灯", "变道事故", "车道变更", "变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"),
-                ("R-003", "闯红灯行为", "路口事故", "交叉路口", "违反交通信号灯指示，闯红灯造成事故，闯红灯车辆负全部责任。"),
-                ("R-004", "倒车未观察", "倒车事故", "停车场/倒车", "倒车时未仔细观察后方情况，造成碰撞事故，倒车方负全部责任。"),
-                ("R-005", "超速行驶", "一般事故", "限速路段", "超过规定速度行驶，导致制动距离不足或失控，超速车辆根据情节承担相应责任。"),
-                ("R-006", "逆行", "一般事故", "单行道", "机动车逆向行驶，与对向正常行驶车辆相撞，逆行车辆负全部责任。"),
-                ("R-007", "违法变更车道", "变道事故", "车道变更", "连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"),
-            ]
-            for rid, rname, rtype, rscene, rcontent in default_rules:
-                db.add(Rule(id=rid, name=rname, type=rtype, scene=rscene, content=rcontent))
-            db.commit()
+        # ---- 从CSV加载规则库（交通事故规则库.csv） ----
+        _load_rules_from_csv(db)
 
         # ---- 演示案例（含完整证据链路） ----
         demo_id = "ACC-DEMO-2025-0001"
@@ -442,34 +430,34 @@ def init_db():
             # 4. matched_rule 记录（2条）
             db.add(MatchedRule(
                 case_id=demo_id,
-                rule_id="R-002",
-                rule_name="变道未打转向灯",
+                rule_id="R-001",
+                rule_name="未打转向灯",
                 trigger_condition="变道未打灯",
                 trigger_reason="视频分析显示变道前未打转向灯",
-                legal_basis="变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。"
+                legal_basis="变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。依据《道路交通安全法实施条例》第五十七条。"
             ))
             db.add(MatchedRule(
                 case_id=demo_id,
-                rule_id="R-007",
-                rule_name="违法变更车道",
-                trigger_condition="连续变道",
-                trigger_reason="视频分析显示车辆连续变更两条车道",
-                legal_basis="连续变更两条以上车道，或在不具备变道条件时强行变道，变道车辆负主要责任。"
+                rule_id="R-022",
+                rule_name="变道未让行",
+                trigger_condition="变道未让行",
+                trigger_reason="视频分析显示车辆变更车道时未让行正在该车道内正常行驶的车辆",
+                legal_basis="变更车道时未让行正在该车道内正常行驶的车辆，造成碰撞事故，变道方负主要责任。依据《道路交通安全法实施条例》第四十四条。"
             ))
 
             # 5. liability_result 记录
             db.add(LiabilityResult(
                 case_id=demo_id,
-                summary="双车并行变道碰撞事故分析结果：变道车辆（车辆A）在未打转向灯的情况下连续变更两条车道，负主要责任。",
+                summary="双车并行变道碰撞事故分析结果：变道车辆（车辆A）在未打转向灯的情况下强行变道，负主要责任。",
                 ratio="7:3",
                 details=json.dumps({
-                    "analysis": "视频分析显示变道车辆未打转向灯且连续变道，负主要责任",
-                    "vehicle_a": "变道车辆，未打转向灯，连续变道，负70%责任",
+                    "analysis": "视频分析显示变道车辆未打转向灯且变道未让行，负主要责任",
+                    "vehicle_a": "变道车辆，未打转向灯，变道未让行，负70%责任",
                     "vehicle_b": "正常行驶，未及时发现变道车辆，负30%责任"
                 }),
                 hit_rules=json.dumps([
-                    {"code": "R-002", "name": "变道未打转向灯"},
-                    {"code": "R-007", "name": "违法变更车道"}
+                    {"code": "R-001", "name": "未打转向灯"},
+                    {"code": "R-022", "name": "变道未让行"}
                 ])
             ))
 
@@ -479,8 +467,8 @@ def init_db():
                 version_no=1,
                 facts_json=json.dumps({"accident_type": "变道事故", "vehicle_count": 2, "impact_detected": True}),
                 matched_rules_json=json.dumps([
-                    {"code": "R-002", "name": "变道未打转向灯"},
-                    {"code": "R-007", "name": "违法变更车道"}
+                    {"code": "R-001", "name": "未打转向灯"},
+                    {"code": "R-022", "name": "变道未让行"}
                 ]),
                 suggestion_json=json.dumps({"ratio": "7:3", "summary": "变道车辆负主要责任"}),
                 model_version="v1.0"
@@ -1020,36 +1008,55 @@ def _get_accident_type_dist(db) -> List[Dict[str, Any]]:
 
 
 def _get_rule_hit_top(db) -> List[Dict[str, Any]]:
-    """统计 matched_rules 命中次数 Top5"""
+    """统计规则覆盖 Top5：有足够命中数据时显示命中排名；否则显示规则最密集的事故类型"""
     result = []
+    # 优先从 matched_rules 取真实命中数据
     try:
         from sqlalchemy import text
         conn = db.connection()
         rows = conn.execute(
             text("SELECT rule_name, COUNT(*) as cnt FROM matched_rules GROUP BY rule_name ORDER BY cnt DESC LIMIT 5")
         ).fetchall()
-        result = [{"name": r[0] or "未知规则", "count": r[1]} for r in rows if r[0]]
+        hit_data = [{"name": r[0] or "未知规则", "count": r[1]} for r in rows if r[0]]
+        total_hits = sum(d["count"] for d in hit_data)
+        # 只有命中数>=3且总次数>=5时才使用命中数据
+        if len(hit_data) >= 3 and total_hits >= 5:
+            return hit_data[:5]
+        # 否则只保留命中次数>=2的条目
+        result = [d for d in hit_data if d["count"] >= 2]
     except Exception:
         pass
 
-    # matched_rules 无数据时，从规则库取 Top5
-    if len(result) < 3:
-        try:
-            rules = db.query(Rule).filter(Rule.status == "启用").all()
-            if not rules:
-                rules = db.query(Rule).all()
-            from sqlalchemy import func
-            for rule in rules[:5]:
-                name = rule.name or "未命名规则"
-                cnt = db.query(Case).filter(Case.accident_type == rule.type).count()
-                if cnt > 0:
-                    result.append({"name": name, "count": cnt})
-            result.sort(key=lambda x: x["count"], reverse=True)
-            result = result[:5]
-        except Exception:
-            pass
+    # 按规则覆盖的事故类型排名（补充）
+    try:
+        from sqlalchemy import func
+        type_rows = (
+            db.query(Rule.type, func.count(Rule.id).label("cnt"))
+            .filter(Rule.status == "启用")
+            .group_by(Rule.type)
+            .order_by(func.count(Rule.id).desc())
+            .limit(5)
+            .all()
+        )
+        for r in type_rows:
+            type_name = r[0] or "未分类"
+            case_cnt = db.query(Case).filter(Case.accident_type == type_name).count()
+            label = f"{type_name}（{r[1]}条规则）"
+            # 去重检查
+            if not any(d["name"].startswith(type_name) for d in result):
+                result.append({"name": label, "count": case_cnt if case_cnt > 0 else r[1]})
+    except Exception:
+        pass
 
-    return result[:5]
+    # 去重并截取 Top5
+    seen = set()
+    deduped = []
+    for item in result:
+        key = item["name"].split("（")[0]
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped[:5]
 
 
 def _get_review_stats(db, completed: int, pending_review: int, total: int) -> Dict[str, Any]:
@@ -1703,3 +1710,88 @@ def get_evidence_consistency_check(case_id: str) -> Dict[str, Any]:
         }
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# 规则库 CSV 加载
+# ---------------------------------------------------------------------------
+
+# 规则名称 → 详细内容（法律依据描述）映射
+_RULE_CONTENT_MAP = {
+    "未打转向灯": "变更车道时未提前开启转向灯，影响其他车辆正常行驶，变道车辆负主要责任。依据《道路交通安全法实施条例》第五十七条。",
+    "违法超车": "在不具备超车条件的情况下强行超车，与对向或同向车辆发生碰撞，违法超车方负全部责任。依据《道路交通安全法》第四十三条。",
+    "后车未保持安全距离": "同向行驶时后车未与前车保持足以采取紧急制动措施的安全距离，造成追尾事故，后车负全部责任。依据《道路交通安全法》第四十三条。",
+    "占用应急车道": "非紧急情况下占用应急车道行驶或停车，影响应急救援车辆通行，占用方承担相应法律责任。依据《道路交通安全法实施条例》第八十二条。",
+    "开门未观察后方": "路边停车开门时未观察后方来车或行人，造成刮擦或碰撞事故，开门方负全部责任。依据《道路交通安全法实施条例》第六十三条。",
+    "违规停车": "在禁止停车区域或不符合停车规定的地点停放车辆，造成刮擦或阻碍交通，违规停车方负主要责任。依据《道路交通安全法》第五十六条。",
+    "未礼让行人": "机动车行经人行横道时未停车让行正在通过的行人，造成行人受伤事故，机动车负全部责任。依据《道路交通安全法》第四十七条。",
+    "未按规定让行": "通过无信号灯路口时未按规定让行优先通行方，造成路口碰撞事故，未让行方负主要责任。依据《道路交通安全法实施条例》第五十二条。",
+    "压实线变道": "在道路实线区域变更车道，违反禁止标线指示，变道车辆负主要责任。依据《道路交通安全法》第三十八条。",
+    "逆行": "机动车逆向行驶，与对向正常行驶车辆相撞，逆行车辆负全部责任。依据《道路交通安全法》第三十五条。",
+    "变道未让行": "变更车道时未让行正在该车道内正常行驶的车辆，造成碰撞事故，变道方负主要责任。依据《道路交通安全法实施条例》第四十四条。",
+    "超速行驶": "超过规定速度行驶，导致制动距离不足或失控，超速车辆根据情节承担相应责任。依据《道路交通安全法》第四十二条。",
+    "酒后驾驶": "饮酒后驾驶机动车，反应能力下降造成事故，酒后驾驶人负全部责任并承担刑事责任。依据《道路交通安全法》第九十一条。",
+    "机动车占用非机动车道": "机动车违规占用非机动车道行驶或停放，影响非机动车通行，占用方负相应责任。依据《道路交通安全法》第三十六条。",
+    "未按导向车道行驶": "在多车道路口未按导向车道指示方向行驶，导致与其他方向车辆碰撞，违规方负主要责任。依据《道路交通安全法实施条例》第五十一条。",
+    "非机动车逆行": "非机动车在非机动车道内逆向行驶，与正常行驶的非机动车或行人碰撞，逆行方负全部责任。依据《道路交通安全法》第三十五条。",
+    "疲劳驾驶": "连续驾驶超过规定时间未休息，导致反应迟钝造成事故，疲劳驾驶人负主要责任。依据《道路交通安全法实施条例》第六十二条。",
+    "行人闯红灯": "行人违反交通信号灯指示横穿道路，与正常通行车辆发生碰撞，行人负主要责任。依据《道路交通安全法》第六十二条。",
+    "闯红灯": "违反交通信号灯指示闯红灯通过路口，造成其他方向正常通行车辆碰撞，闯红灯车辆负全部责任。依据《道路交通安全法实施条例》第三十八条。",
+    "违法掉头": "在禁止掉头路段或不允许掉头的条件下掉头，影响其他车辆正常通行，违法掉头方负主要责任。依据《道路交通安全法实施条例》第四十九条。",
+    "夜间未开灯": "夜间或能见度低条件下行驶未开启前照灯，导致其他车辆无法及时发现而造成事故，未开灯方负相应责任。依据《道路交通安全法实施条例》第五十八条。",
+    "违规并线": "在高峰车流中未确保安全距离强行并线，影响其他车辆正常行驶，违规并线方负主要责任。依据《道路交通安全法实施条例》第四十四条。",
+    "高速出口急刹": "在高速公路出口处突然急刹车，导致后车追尾，急刹车辆负主要责任。依据《道路交通安全法实施条例》第八十二条。",
+    "雨天未减速": "雨天路滑条件下未降低车速，导致制动距离不足发生追尾，未减速方负主要责任。依据《道路交通安全法》第四十二条。",
+    "未观察盲区": "车辆转弯时未观察后视镜及盲区情况，与其他车辆或行人发生碰撞，转弯方负全部责任。依据《道路交通安全法实施条例》第五十二条。",
+}
+
+
+def _load_rules_from_csv(db) -> int:
+    """
+    从 事故案例/交通事故规则库.csv 加载规则到数据库。
+    仅在 rules 表为空时导入。
+    返回导入的规则数量。
+    """
+    if db.query(Rule).count() > 0:
+        return 0  # 已有规则，跳过
+
+    csv_path = Path(__file__).parent.parent / "事故案例" / "交通事故规则库.csv"
+    if not csv_path.exists():
+        print(f"[RULES] 规则库CSV未找到: {csv_path}，使用默认规则")
+        return 0
+
+    try:
+        import csv as csv_module
+        count = 0
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv_module.DictReader(f)
+            for row in reader:
+                rule_id = (row.get("规则ID") or "").strip()
+                rule_name = (row.get("规则名称") or "").strip()
+                rule_type = (row.get("事故类型") or "").strip()
+                rule_scene = (row.get("适用场景") or "").strip()
+                rule_status = (row.get("状态") or "启用").strip()
+
+                if not rule_id or not rule_name:
+                    continue
+
+                # 根据规则名称生成详细内容
+                content = _RULE_CONTENT_MAP.get(rule_name, f"{rule_name}——违反交通法规，依据实际情况判定责任。")
+
+                db.add(Rule(
+                    id=rule_id,
+                    name=rule_name,
+                    type=rule_type,
+                    scene=rule_scene,
+                    content=content,
+                    status=rule_status,
+                ))
+                count += 1
+
+        db.commit()
+        print(f"[RULES] 从CSV加载了 {count} 条规则")
+        return count
+    except Exception as e:
+        db.rollback()
+        print(f"[RULES] 从CSV加载规则失败: {e}")
+        return 0
