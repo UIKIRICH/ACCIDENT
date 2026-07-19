@@ -170,14 +170,24 @@ const icons = {
   general: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18" fill="none"/><path d="M5 7h14" fill="none"/><path d="M4 21h16" fill="none"/><path d="M8 7l4-4 4 4" fill="none"/></svg>`,
   layers: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2" fill-opacity="0.2"/><polyline points="2 17 12 22 22 17" fill="none"/><polyline points="2 12 12 17 22 12" fill="none"/></svg>`,
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`,
-  save: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" fill-opacity="0.2"/><polyline points="17 21 17 13 7 13 7 21" fill="none"/><polyline points="7 3 7 8 15 8" fill="none"/></svg>`
+  save: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" fill-opacity="0.2"/><polyline points="17 21 17 13 7 13 7 21" fill="none"/><polyline points="7 3 7 8 15 8" fill="none"/></svg>`,
+  collision: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1-4h16l1 4" fill="none"/><path d="M4 17a2 2 0 0 1-2-2v-4h20v4a2 2 0 0 1-2 2" fill="none"/><path d="M7 9h10l-2 8H9L7 9z" fill-opacity="0.2"/><path d="M5 13h14" fill="none"/></svg>`,
+  scrape: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21h16" fill="none"/><path d="M6 3h12l2 6H4l2-6z" fill-opacity="0.2"/><path d="M4 9h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9z" fill="none"/><path d="M10 12h4" fill="none"/></svg>`,
+  pedestrian: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="4" r="2" fill-opacity="0.3"/><path d="M8 17l1-4h6l1 4" fill="none"/><path d="M10 9l-3 4h4l1-2h2l1 2h3l-3-4" fill="none"/></svg>`,
+  nonMotor: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="16" r="2" fill-opacity="0.2"/><circle cx="17" cy="16" r="2" fill-opacity="0.2"/><path d="M12 6l-2-2H5" fill="none"/><path d="M16 10l3-4" fill="none"/><path d="M5 16l2-6h6l3 6" fill="none"/></svg>`,
+  major: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" fill-opacity="0.15"/><line x1="12" y1="9" x2="12" y2="13" fill="none"/><line x1="12" y1="17" x2="12.01" y2="17" fill="none"/></svg>`,
 }
 
 const categoryIcons = {
   '追尾事故': icons.rearEnd,
   '变道事故': icons.laneChange,
   '路口事故': icons.intersection,
-  '一般事故': icons.general
+  '一般事故': icons.general,
+  '碰撞事故': icons.collision,
+  '刮擦事故': icons.scrape,
+  '行人事故': icons.pedestrian,
+  '非机动车事故': icons.nonMotor,
+  '重大事故': icons.major,
 }
 
 const importInput = ref(null)
@@ -223,7 +233,12 @@ const getCategoryClass = (name) => {
     '追尾事故': 'category-rear-end',
     '变道事故': 'category-lane-change',
     '路口事故': 'category-intersection',
-    '一般事故': 'category-general'
+    '一般事故': 'category-general',
+    '碰撞事故': 'category-collision',
+    '刮擦事故': 'category-scrape',
+    '行人事故': 'category-pedestrian',
+    '非机动车事故': 'category-non-motor',
+    '重大事故': 'category-major',
   }
   return classMap[name] || 'category-general'
 }
@@ -517,6 +532,41 @@ const toggleSelectRule = (rule) => {
 }
 
 .category-general:hover .category-icon { transform: scale(1.08) rotate(2deg); }
+
+.category-collision .category-icon {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  box-shadow: 0 3px 10px rgba(239, 68, 68, 0.3);
+}
+.category-collision:hover .category-icon { transform: scale(1.08) rotate(-3deg); }
+
+.category-scrape .category-icon {
+  background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+  color: white;
+  box-shadow: 0 3px 10px rgba(249, 115, 22, 0.3);
+}
+.category-scrape:hover .category-icon { transform: scale(1.08) rotate(3deg); }
+
+.category-pedestrian .category-icon {
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  color: white;
+  box-shadow: 0 3px 10px rgba(6, 182, 212, 0.3);
+}
+.category-pedestrian:hover .category-icon { transform: scale(1.08) rotate(-2deg); }
+
+.category-non-motor .category-icon {
+  background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%);
+  color: white;
+  box-shadow: 0 3px 10px rgba(168, 85, 247, 0.3);
+}
+.category-non-motor:hover .category-icon { transform: scale(1.08) rotate(2deg); }
+
+.category-major .category-icon {
+  background: linear-gradient(135deg, #e11d48 0%, #be123c 100%);
+  color: white;
+  box-shadow: 0 3px 10px rgba(225, 29, 72, 0.3);
+}
+.category-major:hover .category-icon { transform: scale(1.08) rotate(-3deg); }
 
 .category-title {
   color: var(--text-primary);
