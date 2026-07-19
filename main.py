@@ -87,7 +87,8 @@ async def api_get_review_assist(case_id: str):
     print(f"[DEBUG] === 路由被调用，case_id={case_id} ===")
     case_data = _excel_data_cache.get(case_id)
     if case_data is None:
-        raise HTTPException(status_code=404, detail=f"案例 {case_id} 不存在")
+        # 不在 Excel 缓存中，返回空结果而不抛 404，避免前端显示"资源不存在"
+        return {"success": True, "data": None}
     
     # 直接在这里生成复核辅助结果，或者调用 review_assist_service 的生成函数并传入 case_data
     from backend.services.review_assist_service import generate_review_assist_from_data
@@ -918,6 +919,39 @@ def startup():
     # 加载 Excel 数据
     from backend.services.review_assist_service import load_excel_data
     load_excel_data("事故案例汇总表.xlsx")
+
+    # 将 Excel 案例同步到数据库
+    try:
+        from backend.database import get_db_conn
+        from backend.services.review_assist_service import _excel_case_data
+        conn = get_db_conn()
+        conn.execute("PRAGMA foreign_keys = ON")
+        cursor = conn.cursor()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        imported = 0
+        for case_id, case_data in _excel_case_data.items():
+            cursor.execute("SELECT id FROM cases WHERE id = ?", (case_id,))
+            if cursor.fetchone():
+                continue  # 已存在，跳过
+            title = str(case_data.get("title", ""))[:255]
+            accident_type = str(case_data.get("accident_type", ""))[:255]
+            location = str(case_data.get("location", ""))[:255]
+            status = str(case_data.get("status", "待分析"))[:50]
+            description = str(case_data.get("description", ""))
+            weather = str(case_data.get("weather", ""))[:100]
+            road_env = str(case_data.get("road_env", ""))[:255]
+            priority = str(case_data.get("priority", "中"))[:50]
+            cursor.execute(
+                "INSERT INTO cases (id, title, accident_type, location, status, description, weather, road_env, vehicle_info, priority, reviewer, eta, submitted_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (case_id, title, accident_type, location, status, description, weather, road_env, "[]", priority, "", "", now_str, now_str)
+            )
+            imported += 1
+        conn.commit()
+        conn.close()
+        print(f"[INIT] 已将 {imported} 个案例从 Excel 同步到数据库")
+    except Exception as e:
+        print(f"[WARN] Excel 案例同步到数据库失败: {e}")
 
     # 其余代码...
     # 确保 fused_evidence 表存在

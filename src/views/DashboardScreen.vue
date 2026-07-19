@@ -169,16 +169,16 @@
         </div>
       </div>
 
-      <!-- 第四行：高风险/证据冲突案件列表 -->
+      <!-- 第四行：待处理任务列表 -->
       <div class="risk-row">
         <div class="panel panel-full">
           <div class="panel-header">
             <div class="panel-title-group">
               <span class="panel-bar"></span>
-              <span class="panel-title">高风险 / 证据冲突案件</span>
+              <span class="panel-title">待处理任务</span>
               <span class="panel-badge">{{ highRiskCases.length }}</span>
             </div>
-            <span class="panel-subtitle">需重点关注</span>
+            <span class="panel-subtitle">已完成以外的所有案件</span>
           </div>
           <div class="panel-body">
             <div v-if="highRiskCases.length" class="risk-table">
@@ -188,7 +188,7 @@
                 <div class="risk-col col-location">发生地点</div>
                 <div class="risk-col col-time">提交时间</div>
                 <div class="risk-col col-status">处理状态</div>
-                <div class="risk-col col-risk">风险标记</div>
+                <div class="risk-col col-risk">标记</div>
               </div>
               <div class="risk-table-body">
                 <div
@@ -212,7 +212,7 @@
             </div>
             <div v-else class="empty-data">
               <span class="empty-icon" v-html="icons.shield"></span>
-              <span>暂无高风险案件</span>
+              <span>暂无待处理任务</span>
             </div>
           </div>
         </div>
@@ -315,36 +315,32 @@ const manualRefresh = () => {
   notify({ title: '手动刷新', message: '正在获取最新态势数据', type: 'info' })
 }
 
-// 计算高风险 / 证据冲突案件 — 使用 review_assist 数据
+// 计算高风险 / 证据冲突案件 — 获取所有非"已完成"状态的案例
 const computeHighRiskCases = async () => {
   try {
-    const res = await ReviewAssistAPI.statistics()
+    // 获取所有非已完成状态的案例
+    const res = await StatsAPI.getHistoryCases({ limit: 10000 })
     if (!res.success || !res.data) {
       highRiskCases.value = []
       return
     }
-    // 取高优先级案例 + 模型冲突案例的前 10 条
-    const cases = historyCases.value || []
-    const risky = cases
+    const allCases = res.data || []
+    const risky = allCases
       .filter(c => {
         const status = c.status || ''
-        return status === '待处理' || status === '处理中' || status === '待分析' || status === '待复核'
+        return status !== '已完成' && status !== '已归档'
       })
-      .slice(0, 12)
+      .slice(0, 50)
       .map(c => {
         const status = c.status || '待处理'
-        // 从 review_assist 统计推断风险等级
-        const stats = res.data
-        const isHighRisk = stats.review_priority_level?.['高'] > 0 || stats.model_conflict_cases > 50
-        const typeConflict = stats.evidence_status?.['证据有冲突'] || 0
         return {
           caseId: c.id || c.caseId || '--',
           title: c.title || c.accident_type || '未命名案件',
           location: c.location || '未记录',
           time: formatTime(c.submitted_at || c.created_at),
           status,
-          riskLabel: isHighRisk ? '高优先级' : typeConflict > 80 ? '证据冲突' : '待处理',
-          riskClass: isHighRisk ? 'risk-high' : 'risk-medium'
+          riskLabel: status === '待处理' ? '高优先级' : status === '待复核' ? '待审核' : '处理中',
+          riskClass: status === '待处理' ? 'risk-high' : 'risk-medium'
         }
       })
     highRiskCases.value = risky

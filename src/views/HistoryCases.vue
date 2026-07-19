@@ -112,6 +112,20 @@
             下一页
             <span v-html="icons.chevronRight"></span>
           </button>
+          <span class="page-jump">
+            跳至
+            <input
+              type="number"
+              class="page-jump-input"
+              :min="1"
+              :max="totalPages"
+              v-model.number="jumpPage"
+              @keyup.enter="goToPage"
+              placeholder="页码"
+            />
+            页
+            <button class="page-btn page-jump-btn" @click="goToPage">GO</button>
+          </span>
         </div>
       </div>
     </div>
@@ -439,6 +453,14 @@ const statusFilter = ref('全部')
 const priorityFilter = ref('全部')
 const page = ref(1)
 const pageSize = 5
+const jumpPage = ref('')
+const goToPage = () => {
+  const p = parseInt(jumpPage.value)
+  if (p >= 1 && p <= totalPages.value) {
+    page.value = p
+    jumpPage.value = ''
+  }
+}
 const selectedCase = ref(null)
 const showDeleteConfirm = ref(false)
 const caseToDelete = ref(null)
@@ -481,7 +503,7 @@ const editForm = reactive({
 async function fetchHistoryCases() {
   loading.value = true
   try {
-    const result = await StatsAPI.getHistoryCases({ limit: 100 })
+    const result = await StatsAPI.getHistoryCases({ limit: 10000 })
     if (result.success && Array.isArray(result.data)) {
       allCases.value = result.data.map(c => ({
         caseId: c.id,
@@ -1063,6 +1085,37 @@ onMounted(async () => {
 }
 
 .page-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  margin-left: 8px;
+}
+
+.page-jump-input {
+  width: 56px;
+  padding: 5px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  text-align: center;
+  font-family: var(--font-sans);
+}
+
+.page-jump-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+.page-jump-btn {
+  padding: 6px 10px;
+}
 
 .modal-mask {
   position: fixed;

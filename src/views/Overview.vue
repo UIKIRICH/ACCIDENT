@@ -580,23 +580,28 @@ const refreshData = async () => {
       recentCases.value = []
     }
 
-    // 3. 获取任务列表
+    // 3. 获取待处理任务 - 从案例库中筛选非"已完成"状态的案例
     try {
-      const tasksResult = await TasksAPI.getPendingList()
-      if (tasksResult.success && Array.isArray(tasksResult.data)) {
-        pendingTasksList.value = tasksResult.data.map(t => ({
-          id: t.id,
-          caseId: t.case_id,
-          title: t.title || t.case_title || '任务',
-          type: t.task_type || 'analysis',
-          status: t.status || 'pending',
-          priority: t.priority || 'medium',
-          deadline: t.deadline || t.created_at || '',
-          createdAt: t.created_at || ''
+      const casesResult = await StatsAPI.getHistoryCases({ limit: 10000 })
+      if (casesResult.success && Array.isArray(casesResult.data)) {
+        const nonDone = casesResult.data
+          .filter(c => {
+            const s = c.status || ''
+            return s !== '已完成' && s !== '已归档'
+          })
+        pendingTasksList.value = nonDone.map(c => ({
+          id: c.id || c.case_id || c.caseId,
+          caseId: c.id || c.case_id || c.caseId,
+          title: c.title || c.accident_type || '未命名案件',
+          type: c.accident_type || 'analysis',
+          status: c.status || '待处理',
+          priority: c.status === '待处理' ? 'high' : 'medium',
+          deadline: c.submitted_at || c.created_at || '',
+          createdAt: c.submitted_at || c.created_at || ''
         }))
       }
     } catch (e) {
-      console.warn('获取任务列表失败:', e)
+      console.warn('获取待处理任务失败:', e)
       pendingTasksList.value = []
     }
 
