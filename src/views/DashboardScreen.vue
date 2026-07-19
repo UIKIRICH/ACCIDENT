@@ -89,9 +89,9 @@
           <div class="panel-header">
             <div class="panel-title-group">
               <span class="panel-bar"></span>
-              <span class="panel-title">规则命中 Top5</span>
+              <span class="panel-title">规则覆盖 Top5</span>
             </div>
-            <span class="panel-subtitle">高频触发规则</span>
+            <span class="panel-subtitle">高频覆盖事故类型</span>
           </div>
           <div class="panel-body">
             <div v-if="ruleHitTop.length" class="column-chart">
@@ -255,7 +255,8 @@ const icons = {
   plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
   analyze: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="8"/></svg>`,
   review: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
-  done: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`
+  done: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  rules: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill-opacity="0.2"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`
 }
 
 // 统一获取统计字段（兼容驼峰 / 下划线命名，缺失时返回默认值）
@@ -368,7 +369,7 @@ const updateTime = () => {
 
 // ── 计算属性 ──
 
-// 4 个数字卡片
+// 5 个数字卡片
 const statCards = computed(() => [
   {
     key: 'todayNew',
@@ -401,6 +402,14 @@ const statCards = computed(() => [
     unit: '件',
     cls: 'card-green',
     icon: icons.done
+  },
+  {
+    key: 'activeRules',
+    label: '活跃规则',
+    value: getStat('activeRules', 'active_rules'),
+    unit: '条',
+    cls: 'card-purple',
+    icon: icons.rules
   }
 ])
 
@@ -749,7 +758,7 @@ onUnmounted(() => {
 /* ── 第一行：数字卡片 ── */
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--space-5);
 }
 
@@ -795,6 +804,7 @@ onUnmounted(() => {
 .card-orange .stat-card-icon { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #fff; box-shadow: 0 3px 10px rgba(245, 158, 11, 0.25); }
 .card-blue .stat-card-icon { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #fff; box-shadow: 0 3px 10px rgba(59, 130, 246, 0.25); }
 .card-green .stat-card-icon { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); color: #fff; box-shadow: 0 3px 10px rgba(34, 197, 94, 0.25); }
+.card-purple .stat-card-icon { background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: #fff; box-shadow: 0 3px 10px rgba(139, 92, 246, 0.25); }
 
 .stat-card-content {
   flex: 1;
@@ -845,6 +855,7 @@ onUnmounted(() => {
 .card-orange .stat-card-corner { background: linear-gradient(90deg, #f59e0b, transparent); }
 .card-blue .stat-card-corner { background: linear-gradient(90deg, #3b82f6, transparent); }
 .card-green .stat-card-corner { background: linear-gradient(90deg, #22c55e, transparent); }
+.card-purple .stat-card-corner { background: linear-gradient(90deg, #8b5cf6, transparent); }
 
 /* 数字翻牌动画 */
 .flip-enter-active,
